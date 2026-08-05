@@ -1,54 +1,123 @@
-from scapy.all import rdpcap
+from scapy.all import rdpcap, IP, TCP, UDP, ICMP, ARP, DNS
 
 print(f"Reading the pcap file...")
 
 packets = rdpcap("test.pcapng")
 
-
-for packet in packets:
-    packet.show()
-    input()
-
-
+# Analysing statistics from pcap file and returns dictionary with statistics
 
 def stat():
-    #How many packets
-    #How many TCP packets
-    #How many UDP packets
-    #and etc
+    print("Getting Statistic of the packets [*]")
+    stats = {
+        'total_packets': len(packets),
+        'tcp': 0,
+        'udp': 0,
+        'icmp': 0,
+        'arp': 0,
+        'dns': 0,
+        'ipv4': 0,
+        'ipv6': 0,
+        'other': 0,
+        'unique_ips': set(),
+        'unique_ports': set(),
+        'packet_sizes': []
+    }
+    
+    for packet in packets:  # Walking through all the packets
+        stats['packet_sizes'].append(len(packet))  # Adding packet size to the dict
+
+        # Checking if packet is an IP packet
+        if IP in packet:
+            stats['ipv4'] += 1  # Adding numbers
+
+            ip_layer = packet[IP]  # Getting packet for the further analysis
+
+            stats['unique_ips'].add(ip_layer.src)
+            stats['unique_ips'].add(ip_layer.dst)
+
+            if TCP in packet:
+                stats['tcp'] += 1
+                stats['unique_ports'].add(packet[TCP].sport)
+                stats['unique_ports'].add(packet[TCP].dport)
+
+            elif UDP in packet:  # UDP
+                stats['udp'] += 1
+                stats['unique_ports'].add(packet[UDP].sport)
+                stats['unique_ports'].add(packet[UDP].dport)
+
+                if DNS in packet:
+                    stats['dns'] += 1
+
+            elif ICMP in packet:  # ICMP protocol (ping etc.)
+                stats['icmp'] += 1
+
+        # Checking ARP packets (outside of IP block!)
+        elif ARP in packet:
+            stats['arp'] += 1
+
+        else:
+            stats['other'] += 1
+    
+    # Printing results
+    print("\n" + "="*50)
+    print("Packet Statistics")
+    print("="*50)
+    print(f" Overall packets: {stats['total_packets']}")
+    print(f" IPv4: {stats['ipv4']}")
+    print(f" TCP: {stats['tcp']}")
+    print(f" UDP: {stats['udp']}")
+    print(f"  ICMP: {stats['icmp']}")
+    print(f" ARP: {stats['arp']}")
+    print(f" DNS: {stats['dns']}")
+    print(f" Other: {stats['other']}")
+    print(f" Unique IP: {len(stats['unique_ips'])}")
+    print(f" Uniqiue ports: {len(stats['unique_ports'])}")
+    
+    if stats['packet_sizes']:
+        avg_size = sum(stats['packet_sizes']) / len(stats['packet_sizes'])
+        print(f" Average size: {avg_size:.0f} bytes")
+        print(f" Min size: {min(stats['packet_sizes'])} bytes")
+        print(f" Max size: {max(stats['packet_sizes'])} bytes")
+    
+    print("="*50)
+    
+    return stats
+
+            
 
 
 
 
-def threat_checking ():
-    #Checking pcap file on man in the middle attacks and etc
-
-
-
-
+def threat_checking():
+    # Checking pcap file on man in the middle attacks and etc
+    print("Checking for threats... (coming soon)")
+    return []
 
 def report_generator():
-    #coming soon
-
-
+    # coming soon
+    print("Generating report... (coming soon)")
+    return
 
 def main():
     pcap_file = "test.pcapng"
-
-    packets = rdpcap(pcap_file)
-
-    get_statistics(packets)
-
-    threat_checking(packets)
-
-    report_generator([])
-
-
-
+    
+    print(f"Reading the pcap file {pcap_file}...")
+    packets = rdpcap(pcap_file)  # Загружаем пакеты в глобальную переменную
+    print(f"Loaded {len(packets)} packets\n")
+    
+    
+    stats = stat()
+    
+    
+    threats = threat_checking()
+    
+    
+    report_generator()
+    
+    print("\n Analysis complete!")
 
 if __name__ == "__main__":
     main()
-
 
 
 
