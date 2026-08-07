@@ -59,14 +59,14 @@ def stat():
             stats['other'] += 1
     
     # Printing results
-    print("\n" + "="*50)
+    print("\n" + "="*100)
     print("Packet Statistics")
-    print("="*50)
+    print("="*100)
     print(f" Overall packets: {stats['total_packets']}")
     print(f" IPv4: {stats['ipv4']}")
     print(f" TCP: {stats['tcp']}")
     print(f" UDP: {stats['udp']}")
-    print(f"  ICMP: {stats['icmp']}")
+    print(f" ICMP: {stats['icmp']}")
     print(f" ARP: {stats['arp']}")
     print(f" DNS: {stats['dns']}")
     print(f" Other: {stats['other']}")
@@ -79,7 +79,18 @@ def stat():
         print(f" Min size: {min(stats['packet_sizes'])} bytes")
         print(f" Max size: {max(stats['packet_sizes'])} bytes")
     
-    print("="*50)
+    print("="*100)
+
+    #Add capability  to list and analyse unique ip adresses and ports
+
+    print(f"Unique ip addresses are {stats['unique_ips']}")
+
+    print("="*100)
+
+    print(f"Unique ports which had been interacted in this pcap files are {stats['unique_ports']}")    
+
+    print("="*100)
+
     
     return stats
 
@@ -102,7 +113,7 @@ def main():
     pcap_file = "test.pcapng"
     
     print(f"Reading the pcap file {pcap_file}...")
-    packets = rdpcap(pcap_file)  # Загружаем пакеты в глобальную переменную
+    packets = rdpcap(pcap_file)  
     print(f"Loaded {len(packets)} packets\n")
     
     
@@ -118,8 +129,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
 
