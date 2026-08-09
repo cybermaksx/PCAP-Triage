@@ -100,53 +100,51 @@ def stat():
 
 
 def threat_checking(packets):
-    # Checking pcap file on man in the middle attacks and etc
-    ip_ports = []
+    """Detect SYN port scanning in captured packets."""
+
+    # Dictionary to accumulate unique destination ports per source IP
+    ip_ports = {}
+
+    # List to store detected threats (returned at the end)
     found_threats = []
+
+    # Minimum number of unique ports to consider it a scan
     THRESHOLD = 20
-    
+
+    # --- PASS 1: Collect data from all packets ---
     for packet in packets:
+        # Only process TCP SYN packets (start of new connection)
         if IP in packet and TCP in packet and packet[TCP].flags == 'S':
-            src_ip = packet[IP].src
-            dst_ip = packet[TCP].dport
-            
+            src_ip = packet[IP].src          # Source IP address
+            dst_port = packet[TCP].dport     # Destination port (not IP!)
 
-        for ip,ports in ip_ports.items():
-            if len(ports) > THRESHOLD:
-                print(f"[!]SYN scaning is detected {ip}: {len(ports)} unique ports")
-                print(f"     Ports: {sorted(ports)}")
+            # Add port to the set belonging to this source IP
+            # setdefault creates an empty set if key doesn't exist yet
+            ip_ports.setdefault(src_ip, set()).add(dst_port)
 
-            elif:
-                print("No SYN scaning ")
-            
+    # --- PASS 2: Analyze collected data AFTER the loop ---
+    # Note: this loop is NOT inside the packet loop (check indentation!)
+    for ip, ports in ip_ports.items():
+        if len(ports) > THRESHOLD:
+            print(f"[!] SYN scanning detected from {ip}: {len(ports)} unique ports")
+            print(f"    Ports: {sorted(ports)}")
 
+            # Append structured threat info to results list
+            found_threats.append({
+                'type': 'PORT_SCAN',
+                'severity': 'HIGH',
+                'source': ip,
+                'description': f'{ip} scanned {len(ports)} unique ports'
+            })
 
-        pass 
+    # Print message only once if nothing was found
+    if not found_threats:
+        print("No SYN scanning detected")
 
+    return found_threats
 
-     return found_threats   
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        
+   
 
 def report_generator():
     # coming soon
@@ -164,7 +162,7 @@ def main():
     stats = stat()
     
     
-    threats = threat_checking()
+    threats = threat_checking(packets)
     
     
     report_generator()
