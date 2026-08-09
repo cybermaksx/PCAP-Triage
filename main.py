@@ -103,11 +103,21 @@ def threat_checking(packets):
     # Checking pcap file on man in the middle attacks and etc
     ip_ports = []
     found_threats = []
+    THRESHOLD = 20
     
     for packet in packets:
         if IP in packet and TCP in packet and packet[TCP].flags == 'S':
             src_ip = packet[IP].src
             dst_ip = packet[TCP].dport
+            
+
+        for ip,ports in ip_ports.items():
+            if len(ports) > THRESHOLD:
+                print(f"[!]SYN scaning is detected {ip}: {len(ports)} unique ports")
+                print(f"     Ports: {sorted(ports)}")
+
+            elif:
+                print("No SYN scaning ")
             
 
 
