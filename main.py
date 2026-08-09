@@ -99,10 +99,44 @@ def stat():
 
 
 
-def threat_checking():
+def threat_checking(packets):
     # Checking pcap file on man in the middle attacks and etc
-    print("Checking for threats... (coming soon)")
-    return []
+    ip_ports = []
+    found_threats = []
+    
+    for packet in packets:
+        if IP in packet and TCP in packet and packet[TCP].flags == 'S':
+            src_ip = packet[IP].src
+            dst_ip = packet[TCP].dport
+            
+
+
+        pass 
+
+
+     return found_threats   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 def report_generator():
     # coming soon
