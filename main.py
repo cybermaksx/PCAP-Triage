@@ -1,12 +1,24 @@
 from scapy.all import rdpcap, IP, TCP, UDP, ICMP, ARP, DNS
+import argparse
+import os
 
-print(f"Reading the pcap file...")
 
-packets = rdpcap("test.pcapng")
+print(f"Follow the white rabit")
+
+
+def parse_arg():
+    parser = argparse.ArgumentParser(description = "Pcap-Triage analyse and threat hunting")
+    parser.add_argument("pcap_file", help = "name of the .pcap file")
+    return parser.parse_args()
+
+   
+
+
+   # packets = rdpcap("test.pcapng")
 
 # Analysing statistics from pcap file and returns dictionary with statistics
 
-def stat():
+def stat(packets):
     print("Getting Statistic of the packets [*]")
     stats = {
         'total_packets': len(packets),
@@ -152,14 +164,18 @@ def report_generator():
     return
 
 def main():
-    pcap_file = "test.pcapng"
+
+    #pcap_file = "test.pcapng"
     
-    print(f"Reading the pcap file {pcap_file}...")
-    packets = rdpcap(pcap_file)  
+    print(f"Reading the pcap file ...")
+    #packets = rdpcap(pcap_file)
+
+    args = parse_arg() 
+    packets = rdpcap(args.pcap_file)  
     print(f"Loaded {len(packets)} packets\n")
     
     
-    stats = stat()
+    stats = stat(packets)
     
     
     threats = threat_checking(packets)
