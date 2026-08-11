@@ -1,71 +1,62 @@
 # PCAP-Triage
 
-A Python-based network forensics tool for analyzing `.pcap`/`.pcapng` files — built to grow from static traffic statistics into OT/ICS-aware threat detection.
+A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` captures — built to grow from generic traffic statistics into OT/ICS-aware threat detection.
 
-## Status: Phase 1 (Static Analysis) — in progress
+> **Status: early development (Phase 1).** Traffic statistics and SYN-scan detection work today. Industrial protocol support is the next milestone. See [Roadmap](#roadmap) for the honest state of things.
 
-| Feature | Status |
-|---|---|
-| Protocol distribution (TCP/UDP/ICMP/ARP/DNS) | ✅ Done |
-| Unique IP / port extraction | ✅ Done |
-| Packet size metrics (avg/min/max) | ✅ Done |
-| SYN scan detection (threshold-based) | ✅ Done |
-| CLI via argparse (replace hardcoded `pcap_file`) | ⬜ Next |
-| Modbus/TCP detection + function code parsing | ⬜ Next |
-| JSON threat report output | ⬜ Planned |
-| DNS tunneling heuristic (entropy/length) | ⬜ Planned |
-| DNP3 / S7comm detection | ⬜ Planned |
-| TLS JA3 fingerprinting | ⬜ Planned |
-| Real-time capture | ⬜ Future |
-| Dashboard (Flask/Django) | ⬜ Future |
-| ML anomaly detection | ⬜ Future |
+## Features
 
-## What to work on right now
+**Working now**
 
-**1. CLI (argparse)**
-Replace the hardcoded `pcap_file = "test.pcapng"` in `main()` with a proper CLI:
-```bash
-python main.py -f capture.pcap
-```
-This unblocks everything else — every new module needs to run against arbitrary files, not just `test.pcapng`.
+- Protocol distribution — IPv4, TCP, UDP, ICMP, ARP, DNS
+- Unique IP address and port extraction
+- Packet size metrics — average, min, max
+- SYN port-scan detection with a configurable threshold
+- CLI interface via `argparse`
 
-**2. Modbus/TCP module — the current priority**
-This is the OT-security entry point for the project. Workflow:
-1. Get a Modbus pcap (Wireshark sample captures, or spin up a `conpot`/OpenPLC honeypot and generate traffic yourself).
-2. Open it in Wireshark's hex view before writing any code — manually match bytes to the parsed MBAP header and function code.
-3. Parse just the MBAP header (7 bytes) and function code table — not the full spec.
-4. Write the parser by hand with `struct` (no protocol libs — same approach as the SYN scanner).
-5. Write 3–5 unit tests against real captured bytes as fixtures.
-6. Add a `modbus.py` module, wire it into `main.py`, update this README's status table.
+**Known limitations**
 
-**3. After Modbus is solid**
-Move to DNS tunneling heuristics (reuses the DNS parsing you already have), then TLS JA3, then DNP3/S7comm. One protocol at a time — don't start the next until the current one has tests and is merged.
+- IPv6 packets are not counted separately — they fall into the `Other` bucket
+- DNS is only counted over UDP; DNS over TCP (port 53) is missed
+- The whole capture is loaded into memory (`rdpcap`), so very large files will not work
+- Report export (JSON/CSV/HTML) is a stub, not implemented yet
+- No test suite yet
 
 ## Installation
 
 ### Prerequisites
-- Python 3.6+
+
+- Python 3.8+
 - pip
 
 ### Setup
+
 ```bash
 git clone https://github.com/cybermaksx/PCAP-Triage.git
 cd PCAP-Triage
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+The only dependency is [Scapy](https://scapy.net/) (developed against 2.7.0).
 
 ## Usage
 
 ```bash
-python main.py -f capture.pcap
+python main.py <capture.pcap>
 ```
-*(CLI flag above is the target interface — see "What to work on right now" if not yet implemented.)*
+
+Example:
+
+```bash
+python main.py test.pcapng
+```
 
 ### Sample output
+
 ```
-Reading the pcap file test.pcapng...
+Reading the pcap file ...
 Loaded 40 packets
 
 ====================================================================================================
@@ -85,57 +76,111 @@ Packet Statistics
  Min size: 54 bytes
  Max size: 2894 bytes
 ====================================================================================================
-Unique IP addresses: {'192.168.1.1', '192.168.1.178', '8.219.122.25', '140.82.112.25'}
+Unique ip addresses are {'192.168.1.178', '140.82.112.25', '192.168.1.1', '8.219.122.25'}
 ====================================================================================================
-Unique ports: {53, 443, 38609, 44128, 44340, 47218, 49948, 55642, 60478}
+Unique ports which had been interacted in this pcap files are {44128, 38609, 47218, 44340, 53, 55642, 443, 49948, 60478}
 ====================================================================================================
 No SYN scanning detected
-Analysis complete!
+Generating report... (coming soon)
+
+ Analysis complete!
 ```
+
+When a scan is present, the output includes the offending source and the ports it touched:
+
+```
+[!] SYN scanning detected from 10.0.0.66: 512 unique ports
+    Ports: [21, 22, 23, 25, 53, 80, 110, 111, 135, 139, ...]
+```
+
+## Roadmap
+
+Phase 1 — generic static analysis:
+
+| Feature | Status |
+|---|---|
+| Protocol distribution (TCP/UDP/ICMP/ARP/DNS) | Done |
+| Unique IP / port extraction | Done |
+| Packet size metrics | Done |
+| SYN scan detection (threshold-based) | Done |
+| CLI via argparse | Done |
+| Refactor into single-pass collector + detector modules | In progress |
+| JSON report output | Planned |
+| ARP spoofing detection (MITM precursor) | Planned |
+| Streaming reader for large captures (`PcapReader`) | Planned |
+| Unit tests | Planned |
+
+Phase 2 — OT/ICS protocols, the actual goal of this project:
+
+| Feature | Status |
+|---|---|
+| Modbus/TCP detection + MBAP header parsing | Next up |
+| Modbus write-command detection (FC 5/6/15/16/22/23) | Planned |
+| Unauthorized Modbus master detection | Planned |
+| DNP3 / S7comm parsing | Planned |
+
+Phase 3 — later, no timeline:
+
+| Feature | Status |
+|---|---|
+| DNS tunneling heuristics (entropy / label length) | Planned |
+| TLS JA3 fingerprinting | Planned |
+| Beaconing / C2 interval analysis | Planned |
+| Real-time capture | Future |
+| Web dashboard | Future |
+| ML-based anomaly detection | Future |
 
 ## Project structure
 
 ```
 PCAP-Triage/
-├── main.py          # Entry point, CLI, orchestration
-├── modbus.py         # (planned) Modbus/TCP parser and threat checks
-├── test.pcapng        # Sample capture for testing
-├── tests/             # (planned) unit tests with real byte fixtures
+├── main.py           # Entry point: CLI and orchestration
+├── test.pcapng       # Sample capture
+├── requirements.txt
 ├── README.md
-└── requirements.txt
+└── LICENSE
 ```
 
-## Key functions
-
-### `stat()`
-Protocol distribution, unique IPs/ports, packet size metrics.
-
-### `threat_checking(packets)`
-SYN port scan detection — configurable threshold (default: 20 ports), source IP tracking, structured threat report.
-
-### `report_generator()`
-In development — JSON/CSV/HTML export.
+The codebase is being reorganised into a single-pass collector (`context.py`), independent
+detector functions (`detectors.py`) and an output layer (`report.py`). This structure exists so
+each new protocol parser can be added without touching the packet-reading loop or the existing
+detectors.
 
 ## Why OT protocols
 
-Generic pcap statistics and SYN-scan detection are common — hundreds of similar tools exist on GitHub. Industrial protocol parsing (Modbus, DNP3, S7comm) is what differentiates this project and directly supports OT security work: detecting unexpected write commands on read-only points, unauthorized engineering-station traffic, and protocol anomalies that generic tools miss entirely.
+Generic pcap statistics and SYN-scan detection are well covered — Zeek, Suricata and tshark do
+this faster and better, and plenty of small tools on GitHub do it too. Industrial protocol
+parsing is where this project aims to be useful: detecting unexpected write commands to field
+devices, unauthorised engineering-station traffic, and protocol-level anomalies that require
+understanding what the payload actually means.
 
-## Security use cases
-- **Incident response** — quick triage of captured traffic
-- **Network audit** — verify configs and security policies
-- **Threat hunting** — spot recon before exploitation
-- **OT/ICS monitoring** — flag anomalous industrial protocol commands
-- **Forensic analysis** — retrospective capture analysis
+That space is not empty either — Zeek has ICS parsers through ICSNPP, and Suricata supports
+Modbus. The niche this tool targets is quick, dependency-light triage: a single script you can
+run against a capture on someone else's laptop during an incident, without deploying a whole
+monitoring stack first.
+
+## Use cases
+
+- **Incident response** — fast triage of a captured file
+- **Network audit** — verifying configuration and policy against real traffic
+- **Threat hunting** — spotting reconnaissance before exploitation
+- **OT/ICS monitoring** — flagging anomalous industrial protocol commands
+- **Forensics** — retrospective analysis of stored captures
 
 ## Contributing
+
+Areas where help is welcome:
+
 - Additional protocol parsers (DNP3, S7comm, EtherNet/IP)
-- Additional threat signatures (ARP spoofing, DDoS patterns)
-- Performance work for large PCAP files
-- Report generation
+- Additional detection logic (ARP spoofing, DNS tunneling, beaconing)
+- Performance work for large captures
+- Report generation and output formats
 
 ## License
+
 MIT License — Copyright (c) 2026 CyberMaksX
 
 ## Author
+
 **CyberMaksX**
-- GitHub: [@cybermaksx](https://github.com/cybermaksx)
+GitHub: [@cybermaksx](https://github.com/cybermaksx)
