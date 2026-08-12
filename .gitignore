@@ -1,0 +1,15 @@
+# Virtual environment
+venv/
+.venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Generated reports
+*.report.json
+report.json
+
+# Personal working notes (not part of the published project)
+ROADMAP.md
+REFACTORING.md
