@@ -104,7 +104,8 @@ Phase 1 — generic static analysis:
 | Packet size metrics | Done |
 | SYN scan detection (threshold-based) | Done |
 | CLI via argparse | Done |
-| Refactor into single-pass collector + detector modules | In progress |
+| Refactor into single-pass collector + detector modules | Done |
+| Graceful error handling for missing / invalid files | Planned |
 | JSON report output | Planned |
 | ARP spoofing detection (MITM precursor) | Planned |
 | Streaming reader for large captures (`PcapReader`) | Planned |
@@ -134,17 +135,30 @@ Phase 3 — later, no timeline:
 
 ```
 PCAP-Triage/
-├── main.py           # Entry point: CLI and orchestration
+├── main.py           # Entry point: CLI, file reading, pipeline orchestration
+├── context.py        # Stage 1 — collects facts in a single pass over the packets
+├── detectors.py      # Stage 2 — turns facts into findings; detector registry
+├── report.py         # Stage 3 — all output formatting
 ├── test.pcapng       # Sample capture
 ├── requirements.txt
 ├── README.md
 └── LICENSE
 ```
 
-The codebase is being reorganised into a single-pass collector (`context.py`), independent
-detector functions (`detectors.py`) and an output layer (`report.py`). This structure exists so
-each new protocol parser can be added without touching the packet-reading loop or the existing
-detectors.
+The code is organised as a three-stage pipeline:
+
+```
+pcap file ──> Context ──> findings ──> output
+             (facts)    (conclusions)
+```
+
+`main.py` walks over the packets exactly once and hands each one to `Context.feed()`.
+Detectors then read the collected `Context` rather than the packets themselves, and return
+findings in a common format. `report.py` is the only module that prints.
+
+The point of the split is that adding a protocol parser touches `context.py` (collect) and
+`detectors.py` (decide, then register in the `DETECTORS` list) — the packet-reading loop and
+the existing detectors stay untouched.
 
 ## Why OT protocols
 
