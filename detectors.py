@@ -92,6 +92,11 @@ def detect_syn_scan(ctx, threshold=SYN_SCAN_THRESHOLD):
     return found_threats
 
 
+
+
+
+
+
 # ======================================================================
 # THE REGISTRY
 #

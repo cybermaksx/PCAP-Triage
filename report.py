@@ -36,9 +36,9 @@ def print_stats(ctx):
     stats = ctx.stats  # local alias, so the lines below stay readable
 
     # Printing results
-    print("\n" + "="*100)
+    print("\n" + "="*200)
     print("Packet Statistics")
-    print("="*100)
+    print("="*200)
     print(f" Overall packets: {stats['total_packets']}")
     print(f" IPv4: {stats['ipv4']}")
     print(f" TCP: {stats['tcp']}")
@@ -62,15 +62,15 @@ def print_stats(ctx):
         print(f" Min size: {min(stats['packet_sizes'])} bytes")
         print(f" Max size: {max(stats['packet_sizes'])} bytes")
 
-    print("="*100)
+    print("="*200)
 
     print(f"Unique ip addresses are {stats['unique_ips']}")
 
-    print("="*100)
+    print("="*200)
 
     print(f"Unique ports which had been interacted in this pcap files are {stats['unique_ports']}")
 
-    print("="*100)
+    print("="*200)
 
 
 def print_findings(findings):
@@ -102,7 +102,7 @@ def print_findings(findings):
     # about the whole run: with several detectors registered, "nothing found"
     # can only be decided after all of them have finished.
     if not findings:
-        print("Threats detected")
+        print("No Threats detected")
 
 
 def report_generator():
