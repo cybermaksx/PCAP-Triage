@@ -134,8 +134,8 @@ def main():
         print("You don't have permisions to use this file")
 
 
-    except scapy.error.Scapy_Exception:
-        print("Scappy error") #TODO i need to print scapy mistake the right way  
+    except Scapy_Exception as e:
+        print(f"{e}Scappy error")   
 
 
 
