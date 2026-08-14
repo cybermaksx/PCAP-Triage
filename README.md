@@ -50,7 +50,7 @@ python main.py <capture.pcap>
 Example:
 
 ```bash
-python main.py test.pcapng
+python main.py pcaps/test.pcapng
 ```
 
 ### Sample output

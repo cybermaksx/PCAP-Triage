@@ -76,25 +76,15 @@ def print_stats(ctx):
 def print_findings(findings):
     """Print the list of findings returned by the detectors.
 
-    These are the print() calls that used to sit inside threat_checking().
-    They were moved here so that detectors return data instead of text.
-
-    HONEST WARNING - this function is not finished.
-    The wording below is still hard-coded for SYN scans ("SYN scanning
-    detected from ...") because the goal of this refactor was to move code
-    without changing a single character of output. As soon as a second
-    detector exists, this text becomes wrong: an ARP spoofing finding would
-    be announced as a SYN scan.
-
-    The fix is to print from the fields every finding already has
-    ('type', 'severity', 'source', 'description') instead of from fixed
-    wording. That is step 2 in ROADMAP.md, and it is deliberately left
-    for you to do.
+    Prints from the generic fields every finding shares ('type', 'severity',
+    'source', 'description', 'ports') instead of hard-coded wording, so this
+    function works the same for SYN_SCAN, FIN_SCAN, or any future detector
+    without needing to change.
     """
 
     for threat in findings:
-        print(f"[!] SYN scanning detected from {threat['source']}: "
-              f"{len(threat['ports'])} unique ports")
+        print(f"[!] {threat['type']} ({threat['severity']}) from {threat['source']}")
+        print(f"    {threat['description']}")
         print(f"    Ports: {threat['ports']}")
 
     # Print message only once if nothing was found.
@@ -103,7 +93,6 @@ def print_findings(findings):
     # can only be decided after all of them have finished.
     if not findings:
         print("No Threats detected")
-
 
 def report_generator():
     # coming soon

@@ -78,6 +78,7 @@ class Context:
         # here too (self.modbus = [] or similar) and self.stats is left alone.
         # ------------------------------------------------------------------
         self.ip_ports = {}
+        self.fin_scan_ports = {}
 
     def feed(self, packet, index):
         """Process exactly ONE packet.
@@ -154,3 +155,18 @@ class Context:
             # returns a REFERENCE to it, so .add() modifies the stored set
             # directly - there is no need to write it back into the dict.
             self.ip_ports.setdefault(src_ip, set()).add(dst_port)
+
+
+
+        if IP in packet and TCP in packet and packet[TCP].flags == 'F':
+            src_ip = packet[IP].src
+            dst_port = packet[TCP].dport
+
+            # Same setdefault-and-add pattern as the SYN branch above,
+            # but into a separate dict — bare FIN needs its own bucket
+            # since it means something different from a SYN.
+            self.fin_scan_ports.setdefault(src_ip, set()).add(dst_port)
+
+
+
+            

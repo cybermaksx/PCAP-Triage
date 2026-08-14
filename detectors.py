@@ -43,6 +43,7 @@ main.py does not change. report.py does not change.
 
 # Minimum number of unique destination ports before we call it a scan.
 SYN_SCAN_THRESHOLD = 20
+FIN_SCAN_THRESHOLD = 5
 
 
 def detect_syn_scan(ctx, threshold=SYN_SCAN_THRESHOLD):
@@ -91,7 +92,41 @@ def detect_syn_scan(ctx, threshold=SYN_SCAN_THRESHOLD):
 
     return found_threats
 
+ 
 
+
+def detect_fin_scan(ctx, threshold=FIN_SCAN_THRESHOLD):
+    """Detect FIN (stealth) port scanning.
+
+    A bare TCP FIN packet (flags == 'F', no SYN/ACK) sent to a port that
+    never saw a handshake is not a normal teardown - it's the classic
+    RFC793-based stealth scan technique described in nmap's docs. A host
+    sending bare FIN to many different ports is enumerating open/closed
+    state the same way a SYN scanner does, just via non-response instead
+    of SYN-ACK.
+
+    Mirrors detect_syn_scan exactly - same shape, different source dict
+    and different finding 'type'.
+    """
+    found_threats = []
+
+    # ctx.fin_scan_ports was filled in by Context.feed(). Shape:
+    # src_ip -> set(ports), populated only for packets with flags == 'F'.
+    for ip, ports in ctx.fin_scan_ports.items():
+        if len(ports) > threshold:
+            found_threats.append({
+                'type': 'FIN_SCAN',
+                'severity': 'HIGH',
+                'source': ip,
+                'description': f'{ip} sent bare FIN to {len(ports)} unique ports',
+                'ports': sorted(ports),
+            })
+
+    return found_threats
+        
+    
+
+    
 
 
 
@@ -107,4 +142,5 @@ def detect_syn_scan(ctx, threshold=SYN_SCAN_THRESHOLD):
 
 DETECTORS = [
     detect_syn_scan,
+    detect_fin_scan,
 ]
