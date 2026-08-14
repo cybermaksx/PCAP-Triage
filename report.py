@@ -102,7 +102,7 @@ def print_findings(findings):
     # about the whole run: with several detectors registered, "nothing found"
     # can only be decided after all of them have finished.
     if not findings:
-        print("No SYN scanning detected")
+        print("Threats detected")
 
 
 def report_generator():

@@ -44,6 +44,7 @@ This file stays exactly as it is.
 """
 
 from scapy.all import rdpcap
+from scapy.error import Scapy_Exception
 import argparse
 
 # Our own modules. Note the direction of these imports: main.py imports the
@@ -78,9 +79,11 @@ def main():
     #
     # Also note rdpcap() loads the ENTIRE file into memory. Switching to
     # PcapReader (streaming) is ROADMAP.md step 4.
-    packets = rdpcap(args.pcap_file)
 
-    print(f"Loaded {len(packets)} packets\n")
+    try:
+        packets = rdpcap(args.pcap_file)
+
+        print(f"Loaded {len(packets)} packets\n")
 
     # ------------------------------------------------------------------
     # STAGE 1 - collect facts.
@@ -92,11 +95,11 @@ def main():
     # passed to feed() so that findings can eventually point at specific
     # packet numbers - see the note in context.py.
     # ------------------------------------------------------------------
-    print("Getting Statistic of the packets [*]")
+        print("Getting Statistic of the packets [*]")
 
-    ctx = Context()
-    for index, packet in enumerate(packets):
-        ctx.feed(packet, index)
+        ctx = Context()
+        for index, packet in enumerate(packets):
+            ctx.feed(packet, index)
 
     # ------------------------------------------------------------------
     # STAGE 2 - turn facts into conclusions.
@@ -105,18 +108,35 @@ def main():
     # findings - possibly empty, possibly several. append() would build a
     # list of lists instead of one flat list of findings.
     # ------------------------------------------------------------------
-    findings = []
-    for detect in DETECTORS:
-        findings.extend(detect(ctx))
+        findings = []
+        for detect in DETECTORS:
+            findings.extend(detect(ctx))
 
     # ------------------------------------------------------------------
     # STAGE 3 - show the results.
     # ------------------------------------------------------------------
-    report.print_stats(ctx)
-    report.print_findings(findings)
-    report.report_generator()
+        report.print_stats(ctx)
+        report.print_findings(findings)
+        report.report_generator()
 
-    print("\n Analysis complete!")
+        print("\n Analysis complete!")
+
+
+
+
+    except FileNotFoundError:
+        print("File you entered doesn't exist")
+
+
+
+
+    except PermissionError:
+        print("You don't have permisions to use this file")
+
+
+    except scapy.error.Scapy_Exception:
+        print("Scappy error") #TODO i need to print scapy mistake the right way  
+
 
 
 if __name__ == "__main__":
