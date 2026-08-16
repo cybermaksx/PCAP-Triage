@@ -27,7 +27,7 @@ one way:  main.py -> context.py / detectors.py / report.py.
 Importing in both directions would create a circular import and crash Python.
 """
 
-from scapy.all import IP, TCP, UDP, ICMP, ARP, DNS
+from scapy.all import IP, TCP, UDP, ICMP, ARP, DNS, IPv6
 
 
 def make_context():
@@ -144,6 +144,9 @@ def feed(ctx, packet, index):
 
     # Checking ARP packets (outside of IP block!)
     elif ARP in packet:
+        ctx['stats']['arp'] += 1
+
+    elif IPv6 in packet:
         ctx['stats']['arp'] += 1
 
     else:

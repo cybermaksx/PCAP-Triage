@@ -43,6 +43,7 @@ def print_stats(ctx):
     print("="*wide)
     print(f" Overall packets: {stats['total_packets']}")
     print(f" IPv4: {stats['ipv4']}")
+    print(f" IPv6 {stats['ipv6']}")
     print(f" TCP: {stats['tcp']}")
     print(f" UDP: {stats['udp']}")
     print(f" ICMP: {stats['icmp']}")
