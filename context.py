@@ -64,7 +64,7 @@ def make_context():
         'arp': 0,
         'dns': 0,
         'ipv4': 0,
-        'ipv6': 0,            # still never incremented - see ROADMAP.md
+        'ipv6': 0,            
         'other': 0,
         'unique_ips': set(),
         'unique_ports': set(),
@@ -147,7 +147,7 @@ def feed(ctx, packet, index):
         ctx['stats']['arp'] += 1
 
     elif IPv6 in packet:
-        ctx['stats']['arp'] += 1
+        ctx['stats']['ipv6'] += 1
 
     else:
         ctx['stats']['other'] += 1

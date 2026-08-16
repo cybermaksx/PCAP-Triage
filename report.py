@@ -24,6 +24,11 @@ formats it - that is all it does.
 """
 wide = 147
 
+# How many ports to show per finding before truncating. A full-range scan
+# produces 65535 of them - about 450 000 characters on a single line, which
+# scrolls the rest of the report out of the terminal.
+MAX_PORTS_SHOWN = 10
+
 def print_stats(ctx):
     """Print the traffic statistics block.
 
@@ -71,8 +76,15 @@ def print_stats(ctx):
 
     print("="*wide)
 
-    print(f"Unique ports which had been interacted in this pcap files are {stats['unique_ports']}")
+    if len(stats['unique_ports']) < 20:
+        print(f"Unique ports which had been interacted in this pcap files are {stats['unique_ports']}")
 
+
+    else:
+        ports_to_show = sorted(stats['unique_ports'])[:10]
+        print(f"Unique ports which had been interacted in this pcap files are {ports_to_show}")
+
+    
     print("="*wide)
 
 
@@ -83,12 +95,33 @@ def print_findings(findings):
     'source', 'description', 'ports') instead of hard-coded wording, so this
     function works the same for SYN_SCAN, FIN_SCAN, or any future detector
     without needing to change.
+
+    Long port lists are truncated to MAX_PORTS_SHOWN. The full list belongs in
+    the JSON export - on screen the analyst needs the fact and the scale, not
+    65535 individual numbers.
     """
 
     for threat in findings:
         print(f"[!] {threat['type']} ({threat['severity']}) from {threat['source']}")
         print(f"    {threat['description']}")
-        print(f"    Ports: {threat['ports']}")
+
+        # .get() instead of ['ports']: this field is specific to the scan
+        # detectors. An ARP spoofing finding will not have it, and ['ports']
+        # would raise KeyError and kill the whole run.
+        ports = threat.get('ports')
+
+        if ports:
+            shown = ', '.join(str(p) for p in ports[:MAX_PORTS_SHOWN])
+
+            # The slice is safe on a short list - ports[:10] just returns
+            # whatever is there. The subtraction is NOT: on a 3-port finding
+            # it gives -7, and the line would read "(+-7 more)". Hence the
+            # guard is on the count, not on the slice.
+            hidden = len(ports) - MAX_PORTS_SHOWN
+            if hidden > 0:
+                shown += f" (+{hidden} more)"
+
+            print(f"    Ports: {shown}")
 
     # Print message only once if nothing was found.
     # This check lives here, not in the detector, because it is a statement
