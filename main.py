@@ -50,7 +50,7 @@ import argparse
 # Our own modules. Note the direction of these imports: main.py imports the
 # other three, and none of them import main.py or each other. Keeping arrows
 # pointing one way is what prevents circular imports.
-from context import Context
+from context import make_context, feed
 from detectors import DETECTORS
 import report
 
@@ -97,9 +97,9 @@ def main():
     # ------------------------------------------------------------------
         print("Getting Statistic of the packets [*]")
 
-        ctx = Context()
+        ctx = make_context()
         for index, packet in enumerate(packets):
-            ctx.feed(packet, index)
+            feed(ctx, packet, index)
 
     # ------------------------------------------------------------------
     # STAGE 2 - turn facts into conclusions.

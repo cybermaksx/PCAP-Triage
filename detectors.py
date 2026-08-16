@@ -6,7 +6,7 @@ This module turns FACTS (collected in context.py) into CONCLUSIONS.
 
 Every detector follows the same contract:
 
-    def detect_something(ctx):     takes a Context
+    def detect_something(ctx):     takes a context dict
         ...
         return findings            returns a LIST of finding dictionaries
 
@@ -26,7 +26,7 @@ Three rules that make the contract work:
      They are completely independent. Adding one cannot break another.
 
 To add a new detector you do exactly three things:
-     a) collect whatever raw data it needs in context.py -> Context.feed()
+     a) collect whatever raw data it needs in context.py -> feed()
      b) write the detect_*() function here
      c) add its name to the DETECTORS list at the bottom of this file
 main.py does not change. report.py does not change.
@@ -66,8 +66,8 @@ def detect_syn_scan(ctx, threshold=SYN_SCAN_THRESHOLD):
     # List to store detected threats (returned at the end)
     found_threats = []
 
-    # ctx.ip_ports was filled in by Context.feed(). Shape: src_ip -> set(ports)
-    for ip, ports in ctx.ip_ports.items():
+    # ctx['ip_ports'] was filled in by feed(). Shape: src_ip -> set(ports)
+    for ip, ports in ctx['ip_ports'].items():
         if len(ports) > threshold:
 
             # NOTE: the two print() calls that used to be here are gone.
@@ -110,9 +110,9 @@ def detect_fin_scan(ctx, threshold=FIN_SCAN_THRESHOLD):
     """
     found_threats = []
 
-    # ctx.fin_scan_ports was filled in by Context.feed(). Shape:
+    # ctx['fin_scan_ports'] was filled in by feed(). Shape:
     # src_ip -> set(ports), populated only for packets with flags == 'F'.
-    for ip, ports in ctx.fin_scan_ports.items():
+    for ip, ports in ctx['fin_scan_ports'].items():
         if len(ports) > threshold:
             found_threats.append({
                 'type': 'FIN_SCAN',

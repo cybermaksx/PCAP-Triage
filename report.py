@@ -22,23 +22,25 @@ adding a second output format means adding a function here and nothing else.
 This module imports nothing from the project. It is handed finished data and
 formats it - that is all it does.
 """
-
+wide = 147
 
 def print_stats(ctx):
     """Print the traffic statistics block.
 
     This is the printing half of the old stat() function, moved out unchanged.
     The only difference is where the numbers come from: what used to be the
-    local variable stats[...] is now ctx.stats[...], filled in during the
+    local variable stats[...] is now ctx['stats'][...], filled in during the
     single packet pass in context.py.
     """
 
-    stats = ctx.stats  # local alias, so the lines below stay readable
+    stats = ctx['stats']  # local alias, so the lines below stay readable
+
+    
 
     # Printing results
-    print("\n" + "="*200)
+    print("\n" + "="*wide)
     print("Packet Statistics")
-    print("="*200)
+    print("="*wide)
     print(f" Overall packets: {stats['total_packets']}")
     print(f" IPv4: {stats['ipv4']}")
     print(f" TCP: {stats['tcp']}")
@@ -62,15 +64,15 @@ def print_stats(ctx):
         print(f" Min size: {min(stats['packet_sizes'])} bytes")
         print(f" Max size: {max(stats['packet_sizes'])} bytes")
 
-    print("="*200)
+    print("="*wide)
 
     print(f"Unique ip addresses are {stats['unique_ips']}")
 
-    print("="*200)
+    print("="*wide)
 
     print(f"Unique ports which had been interacted in this pcap files are {stats['unique_ports']}")
 
-    print("="*200)
+    print("="*wide)
 
 
 def print_findings(findings):
