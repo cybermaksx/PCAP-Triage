@@ -67,6 +67,7 @@ def make_context():
         'ipv6': 0,            
         'other': 0,
         'unique_ips': set(),
+        'unique_ipv6': set(),
         'unique_ports': set(),
         'packet_sizes': []
     }
@@ -133,9 +134,9 @@ def feed(ctx, packet, index):
 
     elif IPv6 in packet:
         ctx['stats']['ipv6'] += 1
-        # TODO (ROADMAP.md step 3): IPv6 addresses are not added to
-        # unique_ips yet, so the address list is IPv4-only.
-
+        ip_layer = packet[IPv6]
+        ctx['stats']['unique_ipv6'].add(ip_layer.src)
+        ctx['stats']['unique_ipv6'].add(ip_layer.dst)
     # Checking ARP packets (outside of IP block!)
     elif ARP in packet:
         ctx['stats']['arp'] += 1

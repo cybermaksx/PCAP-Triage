@@ -56,6 +56,7 @@ def print_stats(ctx):
     print(f" DNS: {stats['dns']}")
     print(f" Other: {stats['other']}")
     print(f" Unique IP: {len(stats['unique_ips'])}")
+    print(f" Unique IPv6 {len(stats['unique_ipv6'])}")
     print(f" Unique ports: {len(stats['unique_ports'])}")
 
     # The average is calculated here rather than in context.py because it is a
@@ -73,6 +74,9 @@ def print_stats(ctx):
     print("="*wide)
 
     print(f"Unique ip addresses are {stats['unique_ips']}")
+
+
+    print(f"Unique Ipv6 addresses are {stats['unique_ipv6']}")
 
     print("="*wide)
 
