@@ -117,7 +117,12 @@ def feed(ctx, packet, index):
     ctx['stats']['total_packets'] += 1
     ctx['stats']['packet_sizes'].append(len(packet))  # Adding packet size
 
-    # Checking if packet is an IP packet
+    # ------------------------------------------------------------------
+    # L3 - network layer. Exactly one of these four branches runs per
+    # packet, and together they must cover every packet: ipv4 + ipv6 +
+    # arp + other has to add up to total_packets. That sum is the
+    # cheapest sanity check in the whole file.
+    # ------------------------------------------------------------------
     if IP in packet:
         ctx['stats']['ipv4'] += 1  # Adding numbers
 
@@ -126,31 +131,46 @@ def feed(ctx, packet, index):
         ctx['stats']['unique_ips'].add(ip_layer.src)
         ctx['stats']['unique_ips'].add(ip_layer.dst)
 
-        if TCP in packet:
-            ctx['stats']['tcp'] += 1
-            ctx['stats']['unique_ports'].add(packet[TCP].sport)
-            ctx['stats']['unique_ports'].add(packet[TCP].dport)
-
-        elif UDP in packet:  # UDP
-            ctx['stats']['udp'] += 1
-            ctx['stats']['unique_ports'].add(packet[UDP].sport)
-            ctx['stats']['unique_ports'].add(packet[UDP].dport)
-
-            if DNS in packet:
-                ctx['stats']['dns'] += 1
-
-        elif ICMP in packet:  # ICMP protocol (ping etc.)
-            ctx['stats']['icmp'] += 1
+    elif IPv6 in packet:
+        ctx['stats']['ipv6'] += 1
+        # TODO (ROADMAP.md step 3): IPv6 addresses are not added to
+        # unique_ips yet, so the address list is IPv4-only.
 
     # Checking ARP packets (outside of IP block!)
     elif ARP in packet:
         ctx['stats']['arp'] += 1
 
-    elif IPv6 in packet:
-        ctx['stats']['ipv6'] += 1
-
     else:
         ctx['stats']['other'] += 1
+
+    # ------------------------------------------------------------------
+    # L4 - transport layer. A separate top-level 'if', NOT an 'elif'
+    # attached to the chain above: the two layers are independent. TCP is
+    # mutually exclusive with UDP, not with ARP - and a TCP segment
+    # carried over IPv6 has to be counted here exactly like one over
+    # IPv4. This block used to sit nested inside the IPv4 branch, which
+    # is why TCP read 25 instead of 29 on test.pcapng.
+    # ------------------------------------------------------------------
+    if TCP in packet:
+        ctx['stats']['tcp'] += 1
+        ctx['stats']['unique_ports'].add(packet[TCP].sport)
+        ctx['stats']['unique_ports'].add(packet[TCP].dport)
+
+    elif UDP in packet:  # UDP
+        ctx['stats']['udp'] += 1
+        ctx['stats']['unique_ports'].add(packet[UDP].sport)
+        ctx['stats']['unique_ports'].add(packet[UDP].dport)
+
+        # The only nesting in this block, and it is deliberate: DNS is
+        # asked about only once the packet is known to be UDP.
+        # NOTE: this misses DNS over TCP (zone transfers).
+        if DNS in packet:
+            ctx['stats']['dns'] += 1
+
+    elif ICMP in packet:  # ICMP protocol (ping etc.)
+        ctx['stats']['icmp'] += 1
+        # NOTE: ICMP over IPv4 only. ICMPv6 is a different layer and is
+        # not caught by "ICMP in packet" - see ROADMAP.md step 3.
 
     # ==================================================================
     # PART B - raw material for detectors
