@@ -69,8 +69,8 @@ def main():
     # import - including during --help and during test collection.
     args = parse_arg()
 
-    print(f"Follow the white rabit")
-    print(f"Reading the pcap file ...")
+    report.print_banner()
+    report.print_step(f"reading {args.pcap_file}")
 
     # TODO (ROADMAP.md step 1): this line still crashes with a raw scapy
     # traceback if the file is missing or is not a capture. Wrap it in
@@ -83,7 +83,7 @@ def main():
     try:
         packets = rdpcap(args.pcap_file)
 
-        print(f"Loaded {len(packets)} packets\n")
+        report.print_ok(f"loaded {len(packets)} packets")
 
     # ------------------------------------------------------------------
     # STAGE 1 - collect facts.
@@ -95,7 +95,7 @@ def main():
     # passed to feed() so that findings can eventually point at specific
     # packet numbers - see the note in context.py.
     # ------------------------------------------------------------------
-        print("Getting Statistic of the packets [*]")
+        report.print_step("collecting facts")
 
         ctx = make_context()
         for index, packet in enumerate(packets):
@@ -108,6 +108,8 @@ def main():
     # findings - possibly empty, possibly several. append() would build a
     # list of lists instead of one flat list of findings.
     # ------------------------------------------------------------------
+        report.print_step("running detectors")
+
         findings = []
         for detect in DETECTORS:
             findings.extend(detect(ctx))
@@ -119,7 +121,7 @@ def main():
         report.print_findings(findings)
         report.report_generator()
 
-        print("\n Analysis complete!")
+        report.print_ok("analysis complete")
 
 
 
