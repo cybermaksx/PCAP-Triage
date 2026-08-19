@@ -16,3 +16,4 @@ REFACTORING.md
 
 # Tooling
 .claude/
+.pytest_cache/

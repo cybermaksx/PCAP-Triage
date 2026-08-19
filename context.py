@@ -27,7 +27,7 @@ one way:  main.py -> context.py / detectors.py / report.py.
 Importing in both directions would create a circular import and crash Python.
 """
 
-from scapy.all import IP, TCP, UDP, ICMP, ARP, DNS, IPv6
+from scapy.all import IP, TCP, UDP, ICMP, ARP, DNS, IPv6, UDPerror
 
 
 def make_context():
@@ -85,11 +85,13 @@ def make_context():
     # ------------------------------------------------------------------
     ip_ports = {}
     fin_scan_ports = {}
+    udp_scan_ports = {}
 
     return {
         'stats': stats,
         'ip_ports': ip_ports,
         'fin_scan_ports': fin_scan_ports,
+        'udp_scan_ports': udp_scan_ports,
     }
 
 
@@ -206,4 +208,36 @@ def feed(ctx, packet, index):
 
 
 
+    # UDP scan. Unlike SYN and FIN, the giveaway is not in the scanner's
+    # own packets - a UDP datagram sent to an open port and one sent to a
+    # closed port are byte-for-byte indistinguishable. What exposes the
+    # scan is the VICTIM's reply: a closed UDP port answers with ICMP
+    # type 3 code 3 (port unreachable), an open one stays silent.
+    #
+    # The reply carries a copy of the datagram that triggered it, which
+    # scapy splits out as the IPerror/UDPerror layers. That is where the
+    # scanned port comes from - there is no plain UDP layer in this
+    # packet at all.
+    #
+    # The code 3 check is not optional: unreachable also comes in
+    # host-, net- and protocol-flavours, and the UDPerror check rules out
+    # unreachables provoked by something other than UDP.
+    if (ICMP in packet
+            and packet[ICMP].type == 3
+            and packet[ICMP].code == 3
+            and UDPerror in packet):
+
+        # .dst, NOT .src. This packet travels FROM the victim TO the
+        # scanner, so the scanner sits in the destination field. Reading
+        # .src here - the obvious copy-paste from the two branches above -
+        # would make the finding accuse the host that was scanned.
+        scanner_ip = packet[IP].dst
+        dst_port = packet[UDPerror].dport
+
+        ctx['udp_scan_ports'].setdefault(scanner_ip, set()).add(dst_port)
+
         
+        
+        
+        
+            

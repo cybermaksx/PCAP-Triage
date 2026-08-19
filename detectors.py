@@ -44,6 +44,7 @@ main.py does not change. report.py does not change.
 # Minimum number of unique destination ports before we call it a scan.
 SYN_SCAN_THRESHOLD = 20
 FIN_SCAN_THRESHOLD = 5
+UDP_SCAN_THRESHOLD = 5
 
 
 def detect_syn_scan(ctx, threshold=SYN_SCAN_THRESHOLD):
@@ -124,6 +125,23 @@ def detect_fin_scan(ctx, threshold=FIN_SCAN_THRESHOLD):
 
     return found_threats
         
+
+def detect_udp_scan(ctx, threshold=UDP_SCAN_THRESHOLD):
+
+    found_threats = []
+
+    pass
+    
+
+
+
+
+
+
+
+
+
+
     
 
     
