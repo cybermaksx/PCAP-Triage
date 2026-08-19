@@ -10,6 +10,7 @@ touching packets - and rule 2 of the detector contract has been broken.
 
 import pytest
 
+from context import make_context
 from detectors import (
     DETECTORS,
     FIN_SCAN_THRESHOLD,
@@ -175,7 +176,11 @@ def test_every_detector_returns_a_list_on_an_empty_context():
     whole run, so every detector must survive a context with nothing in
     it. New detectors get covered by this automatically.
     """
-    empty = {'stats': {}, 'ip_ports': {}, 'fin_scan_ports': {}}
+    # Built by make_context() rather than spelled out by hand: it returns
+    # exactly the buckets that exist today, so adding a detector with a
+    # new bucket keeps this test valid instead of breaking it with a
+    # KeyError that has nothing to do with the detector under test.
+    empty = make_context()
 
     for detect in DETECTORS:
         assert detect(empty) == []
@@ -188,8 +193,11 @@ def test_findings_share_one_schema():
     with KeyError. 'ports' is deliberately not required - it is specific
     to the scan detectors, which is why report.py reads it with .get().
     """
-    ctx = {'ip_ports': {'10.0.0.1': set(range(50))},
-           'fin_scan_ports': {'10.0.0.2': set(range(50))}}
+    # Same reasoning as above: start from a complete empty context, then
+    # fill only the two buckets this test cares about.
+    ctx = make_context()
+    ctx['ip_ports']['10.0.0.1'] = set(range(50))
+    ctx['fin_scan_ports']['10.0.0.2'] = set(range(50))
 
     findings = []
     for detect in DETECTORS:
