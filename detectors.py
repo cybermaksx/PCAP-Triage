@@ -130,9 +130,20 @@ def detect_udp_scan(ctx, threshold=UDP_SCAN_THRESHOLD):
 
     found_threats = []
 
-    pass
-    
+    for ip, ports in ctx['udp_scan_ports'].items():
+        if len(ports) > threshold:
+            found_threats.append({
+                'type' : 'UDP_SCAN',
+                'severity': 'HIGH',
+                'source': ip,
+                'description' : f'{ip} sent UDP to {len(ports)} unique ports ',
+                'ports': sorted(ports),
 
+
+                
+            })
+    
+    return found_threats
 
 
 
@@ -161,4 +172,5 @@ def detect_udp_scan(ctx, threshold=UDP_SCAN_THRESHOLD):
 DETECTORS = [
     detect_syn_scan,
     detect_fin_scan,
+    detect_udp_scan,
 ]
