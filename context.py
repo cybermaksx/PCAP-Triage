@@ -86,12 +86,14 @@ def make_context():
     ip_ports = {}
     fin_scan_ports = {}
     udp_scan_ports = {}
+    null_scan_ports = {}
 
     return {
         'stats': stats,
         'ip_ports': ip_ports,
         'fin_scan_ports': fin_scan_ports,
         'udp_scan_ports': udp_scan_ports,
+        'null_scan_ports': null_scan_ports,
     }
 
 
@@ -235,6 +237,14 @@ def feed(ctx, packet, index):
         dst_port = packet[UDPerror].dport
 
         ctx['udp_scan_ports'].setdefault(scanner_ip, set()).add(dst_port)
+
+
+    if IP in packet and TCP in packet and packet[TCP].flags == 0:
+         src_ip = packet[IP].src
+         dst_port = packet[TCP].dport
+
+         ctx['null_scan_ports'].setdefault(src_ip, set()).add(dst_port)
+        
 
         
         
