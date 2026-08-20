@@ -14,8 +14,10 @@ from context import make_context
 from detectors import (
     DETECTORS,
     FIN_SCAN_THRESHOLD,
+    NULL_SCAN_THRESHOLD,
     SYN_SCAN_THRESHOLD,
     detect_fin_scan,
+    detect_null_scan,
     detect_syn_scan,
 )
 
@@ -146,6 +148,83 @@ def test_detectors_read_only_their_own_bucket():
     """
     assert detect_syn_scan({'ip_ports': {}, 'fin_scan_ports': {'x': set(range(50))}}) == []
     assert detect_fin_scan({'fin_scan_ports': {}, 'ip_ports': {'x': set(range(50))}}) == []
+
+
+# ======================================================================
+# NULL scan
+#
+# Written as a worked example - the comments explain the mechanics of a
+# pytest test, not just this particular assertion.
+# ======================================================================
+
+def test_null_fires_on_a_single_port():
+    """A lone flagless TCP packet is enough to report a NULL scan.
+
+    Everything pytest needs to find and run a test is in the two lines
+    above this one:
+
+      * the file is named  test_*.py  and lives under tests/
+      * the function is named  test_*  and takes no arguments
+      * it is a plain function - no class, no self, nothing to inherit
+
+    pytest imports the file, calls every test_* function it finds, and
+    reports one as failed if it raises. That is the whole mechanism.
+    A test that raises nothing passed.
+
+    The name matters more than it looks. When this fails months from
+    now, the first thing shown is the name - so it states the claim
+    ("fires on a single port"), not the machinery ("test null 1").
+    """
+    # ---- ARRANGE -----------------------------------------------------
+    # Build the input. make_context() rather than a hand-written
+    # {'null_scan_ports': ...} on purpose: it returns every bucket that
+    # exists today, so a detector added next month cannot break this
+    # test with a KeyError that has nothing to do with NULL scans.
+    ctx = make_context()
+
+    # Fill in exactly the fact under test and nothing else. This is the
+    # payoff of rule 2 in the detector contract - detect_null_scan reads
+    # the context and never touches packets, so a valid input is one
+    # dictionary key, not a capture file. No pcap, no scapy, no disk.
+    #
+    # One port, because that is the interesting case here: the whole
+    # premise of this detector is that a flagless packet is abnormal
+    # enough that a single one is worth reporting.
+    ctx['null_scan_ports']['10.0.0.5'] = {80}
+
+    # ---- ACT ---------------------------------------------------------
+    # Call the thing under test. Exactly one call, with no assertions
+    # tangled into it, so a failure below is unambiguous.
+    findings = detect_null_scan(ctx)
+
+    # ---- ASSERT ------------------------------------------------------
+    # 'assert' is a plain Python statement, not a pytest function. If
+    # the expression is falsy the test fails, and pytest rewrites the
+    # line so the failure message shows the actual values on both sides:
+    #
+    #   assert len(findings) == 1
+    #   E    assert 0 == 1
+    #   E     +  where 0 = len([])
+    #
+    # That rewriting is why bare asserts are enough here and there is no
+    # assertEqual to learn.
+    assert len(findings) == 1
+
+    # Separate asserts rather than one comparison against a whole dict.
+    # A single big equality tells you "the dict differs"; these tell you
+    # which field is wrong, and stop at the first one.
+    finding = findings[0]
+    assert finding['source'] == '10.0.0.5'
+    assert finding['type'] == 'NULL_SCAN'
+    assert finding['severity'] == 'MEDIUM'
+
+    # Pin the threshold semantics too. With NULL_SCAN_THRESHOLD = 0 and
+    # a '>' comparison, one port fires - but that pairing is a decision,
+    # not an accident, and this is where it is written down. Flip the
+    # constant to 1 and this test fails, which is the point: the test
+    # exists to notice the change, not to agree with whatever the code
+    # currently does.
+    assert NULL_SCAN_THRESHOLD == 0
 
 
 # ======================================================================

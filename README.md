@@ -2,8 +2,8 @@
 
 A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` captures — built to grow from generic traffic statistics into OT/ICS-aware threat detection.
 
-> **Status: early development (Phase 1).** Traffic statistics, IPv4/IPv6 accounting and three
-> scan detectors (SYN, FIN, UDP) work today, with a pytest suite covering them. Industrial
+> **Status: early development (Phase 1).** Traffic statistics, IPv4/IPv6 accounting and four
+> scan detectors (SYN, FIN, UDP, NULL) work today, with a pytest suite covering them. Industrial
 > protocol support is the next milestone. See [Roadmap](#roadmap) for the honest state of things.
 
 ## Features
@@ -17,13 +17,14 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 - SYN port-scan detection with a configurable threshold
 - FIN (stealth) scan detection
 - UDP scan detection, inferred from the target's ICMP port-unreachable replies
+- NULL scan detection — TCP packets with no flags set at all, which no working stack sends
 - Detector registry — new detections plug in without touching the pipeline
 - Terminal-aware report — width read from the terminal, addresses sorted numerically
   and laid out in columns, consecutive ports folded into ranges, colour emitted only
   when stdout is a TTY
 - Graceful handling of missing, unreadable and non-capture files
 - CLI interface via `argparse`
-- pytest suite — 31 tests over the collector, the detectors and the registry contract
+- pytest suite — 32 tests over the collector, the detectors and the registry contract
 
 **Known limitations**
 
@@ -38,6 +39,8 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 - UDP scan detection depends on the target answering. Linux rate-limits ICMP
   unreachable replies to roughly one per second, which can suppress most of the
   evidence on a fast scan
+- NULL scan detection fires on a single packet by design, so a broken stack or a
+  middlebox rewriting flags will produce a finding where there is no scan
 
 ## Installation
 
@@ -141,26 +144,34 @@ Consecutive ports are folded into ranges, which matters at scale — the full-ra
 SYN scan in `pcaps/synscan.pcapng` reports its 65 535 ports as `1-65535` instead of
 a single 447 000-character line.
 
-Every detector reports through the same format, so a capture containing several
-techniques prints them uniformly, most severe first:
+Every detector reports through the same format, so findings from different
+techniques print uniformly. The `FINDINGS` block from `synscan.pcapng` and from
+`finscan.pcapng`:
 
 ```
-FINDINGS (2)
+FINDINGS (1)
 ────────────────────────────────────────────────────────────────────────────────
     ▸ PORT_SCAN  HIGH  from 192.168.1.99
       192.168.1.99 scanned 65535 unique ports
       ports  1-65535
+```
 
+```
+FINDINGS (1)
+────────────────────────────────────────────────────────────────────────────────
     ▸ FIN_SCAN  HIGH  from 192.168.1.99
       192.168.1.99 sent bare FIN to 100 unique ports
-      ports  7, 9, 13, 21-23, 25-26, 37, 53, 79-81, 88, 106  (+83 more)
+      ports  7, 9, 13, 21-23, 25-26, 37, 53, 79-81, 88, 106, 110-111, 113  (+82 more)
 ```
+
+Where a capture contains several techniques they are listed together in one block,
+most severe first.
 
 ### Running the tests
 
 ```bash
-python -m pytest -m "not slow"    # 26 tests, ~0.1 s
-python -m pytest                  # 31 tests, ~45 s
+python -m pytest -m "not slow"    # 27 tests, ~0.2 s
+python -m pytest                  # 32 tests, ~45 s
 ```
 
 The `-m` matters: a bare `pytest` does not put the project directory on the module
@@ -186,7 +197,8 @@ Phase 1 — generic static analysis:
 | UDP scan detection (ICMP port-unreachable analysis) | Done |
 | IPv4 / IPv6 accounting split by OSI layer | Done |
 | Unit tests (pytest) | Done |
-| NULL / XMAS scan detection | Planned |
+| NULL scan detection (flagless TCP) | Done |
+| XMAS scan detection | Planned |
 | JSON report output | Planned |
 | ARP spoofing detection (MITM precursor) | Planned |
 | Streaming reader for large captures (`PcapReader`) | Planned |
