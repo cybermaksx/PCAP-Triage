@@ -45,6 +45,7 @@ main.py does not change. report.py does not change.
 SYN_SCAN_THRESHOLD = 20
 FIN_SCAN_THRESHOLD = 5
 UDP_SCAN_THRESHOLD = 5
+NULL_SCAN_THRESHOLD = 1 #Packet should not be empty , if empty one comes most likely we are being scanned
 
 
 def detect_syn_scan(ctx, threshold=SYN_SCAN_THRESHOLD):
@@ -148,6 +149,20 @@ def detect_udp_scan(ctx, threshold=UDP_SCAN_THRESHOLD):
 
 
 
+def detect_null_scan(ctx, threshold=NULL_SCAN_THRESHOLD):
+    found_threats = []
+
+    for ip, ports in ctx['null_scan_ports'].items():
+        if len(ports) > threshold:
+            found_threats.append({
+                'type' : 'NULL_SCAN',
+                'severity': 'MEDIUM',
+                'source': ip,
+                'description' : f'{ip} sent NULL PACKET to {len(ports)} unique ports ',
+                'ports': sorted(ports),
+
+
+            })        
 
 
 

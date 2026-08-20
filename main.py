@@ -72,11 +72,8 @@ def main():
     report.print_banner()
     report.print_step(f"reading {args.pcap_file}")
 
-    # TODO (ROADMAP.md step 1): this line still crashes with a raw scapy
-    # traceback if the file is missing or is not a capture. Wrap it in
-    # try/except - the exceptions to catch are FileNotFoundError,
-    # PermissionError and scapy.error.Scapy_Exception.
-    #
+
+    
     # Also note rdpcap() loads the ENTIRE file into memory. Switching to
     # PcapReader (streaming) is ROADMAP.md step 4.
 
