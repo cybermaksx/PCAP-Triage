@@ -46,7 +46,7 @@ SYN_SCAN_THRESHOLD = 20
 FIN_SCAN_THRESHOLD = 5
 UDP_SCAN_THRESHOLD = 5
 NULL_SCAN_THRESHOLD = 0 #Packet should not be empty , if empty one comes most likely we are being scanned
-
+XMAS_SCAN_THRESHOLD = 0 #Same logic ,packet should not be this way
 
 def detect_syn_scan(ctx, threshold=SYN_SCAN_THRESHOLD):
     """Detect SYN port scanning.
@@ -168,6 +168,23 @@ def detect_null_scan(ctx, threshold=NULL_SCAN_THRESHOLD):
 
 
 
+def detect_xmas_scan(ctx, threshold=XMAS_SCAN_THRESHOLD):
+    found_threats = []
+
+
+    for ip, ports in ctx['xmas_scan_ports'].items():
+        if len(ports) > threshold:
+            found_threats.append({
+            'type' : 'XMAS_SCAN',
+            'severity': 'MEDIUM',
+            'source': ip,
+            'description' : f'{ip} sent FIN ,PUSH, URG PACKETS to {len(ports)} unique ports ',
+            'ports': sorted(ports),
+            
+                
+            })
+
+    return found_threats
 
     
 
@@ -190,4 +207,5 @@ DETECTORS = [
     detect_fin_scan,
     detect_udp_scan,
     detect_null_scan,
+    detect_xmas_scan,
 ]

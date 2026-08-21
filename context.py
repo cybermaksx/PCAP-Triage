@@ -87,13 +87,14 @@ def make_context():
     fin_scan_ports = {}
     udp_scan_ports = {}
     null_scan_ports = {}
-
+    xmas_scan_ports = {}
     return {
         'stats': stats,
         'ip_ports': ip_ports,
         'fin_scan_ports': fin_scan_ports,
         'udp_scan_ports': udp_scan_ports,
         'null_scan_ports': null_scan_ports,
+        'xmas_scan_ports': xmas_scan_ports,
     }
 
 
@@ -247,7 +248,13 @@ def feed(ctx, packet, index):
         
 
         
-        
+
+    if IP in packet and TCP in packet and packet[TCP].flags == 'FPU':
+         src_ip = packet[IP].src
+         dst_port = packet[TCP].dport
+
+         ctx['xmas_scan_ports'].setdefault(src_ip, set()).add(dst_port)
+                
         
         
             
