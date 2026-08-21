@@ -2,8 +2,8 @@
 
 A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` captures — built to grow from generic traffic statistics into OT/ICS-aware threat detection.
 
-> **Status: early development (Phase 1).** Traffic statistics, IPv4/IPv6 accounting and four
-> scan detectors (SYN, FIN, UDP, NULL) work today, with a pytest suite covering them. Industrial
+> **Status: early development (Phase 1).** Traffic statistics, IPv4/IPv6 accounting and five
+> scan detectors (SYN, FIN, UDP, NULL, XMAS) work today, with a pytest suite covering them. Industrial
 > protocol support is the next milestone. See [Roadmap](#roadmap) for the honest state of things.
 
 ## Features
@@ -18,13 +18,15 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 - FIN (stealth) scan detection
 - UDP scan detection, inferred from the target's ICMP port-unreachable replies
 - NULL scan detection — TCP packets with no flags set at all, which no working stack sends
+- XMAS scan detection — TCP packets carrying FIN+PSH+URG together, a combination no
+  legitimate stack produces
 - Detector registry — new detections plug in without touching the pipeline
 - Terminal-aware report — width read from the terminal, addresses sorted numerically
   and laid out in columns, consecutive ports folded into ranges, colour emitted only
   when stdout is a TTY
 - Graceful handling of missing, unreadable and non-capture files
 - CLI interface via `argparse`
-- pytest suite — 32 tests over the collector, the detectors and the registry contract
+- pytest suite — 34 tests over the collector, the detectors and the registry contract
 
 **Known limitations**
 
@@ -39,8 +41,11 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 - UDP scan detection depends on the target answering. Linux rate-limits ICMP
   unreachable replies to roughly one per second, which can suppress most of the
   evidence on a fast scan
-- NULL scan detection fires on a single packet by design, so a broken stack or a
+- NULL and XMAS detection fire on a single packet by design, so a broken stack or a
   middlebox rewriting flags will produce a finding where there is no scan
+- The NULL, FIN and XMAS scans they detect are themselves ineffective against Windows,
+  which answers RST regardless of port state — an attacker probing a Windows host is
+  more likely to use a technique this tool does not yet cover
 
 ## Installation
 
@@ -170,8 +175,8 @@ most severe first.
 ### Running the tests
 
 ```bash
-python -m pytest -m "not slow"    # 27 tests, ~0.2 s
-python -m pytest                  # 32 tests, ~45 s
+python -m pytest -m "not slow"    # 29 tests, ~0.3 s
+python -m pytest                  # 34 tests, ~50 s
 ```
 
 The `-m` matters: a bare `pytest` does not put the project directory on the module
@@ -198,7 +203,7 @@ Phase 1 — generic static analysis:
 | IPv4 / IPv6 accounting split by OSI layer | Done |
 | Unit tests (pytest) | Done |
 | NULL scan detection (flagless TCP) | Done |
-| XMAS scan detection | Planned |
+| XMAS scan detection (FIN+PSH+URG) | Done |
 | JSON report output | Planned |
 | ARP spoofing detection (MITM precursor) | Planned |
 | Streaming reader for large captures (`PcapReader`) | Planned |

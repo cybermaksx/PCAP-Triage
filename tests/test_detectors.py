@@ -16,9 +16,11 @@ from detectors import (
     FIN_SCAN_THRESHOLD,
     NULL_SCAN_THRESHOLD,
     SYN_SCAN_THRESHOLD,
+    XMAS_SCAN_THRESHOLD,
     detect_fin_scan,
     detect_null_scan,
     detect_syn_scan,
+    detect_xmas_scan,
 )
 
 
@@ -225,6 +227,49 @@ def test_null_fires_on_a_single_port():
     # exists to notice the change, not to agree with whatever the code
     # currently does.
     assert NULL_SCAN_THRESHOLD == 0
+
+
+# ======================================================================
+# XMAS scan
+# ======================================================================
+
+def test_xmas_fires_on_a_single_port():
+    """Same threshold-0 reasoning as NULL: FIN+PSH+URG is never legitimate.
+
+    The flag matching itself lives in context.py - this test covers only
+    the decision made on top of the collected ports.
+    """
+    ctx = make_context()
+    ctx['xmas_scan_ports']['10.0.0.5'] = {80}
+
+    findings = detect_xmas_scan(ctx)
+
+    assert len(findings) == 1
+    assert findings[0]['source'] == '10.0.0.5'
+    assert findings[0]['type'] == 'XMAS_SCAN'
+    assert findings[0]['severity'] == 'MEDIUM'
+    assert XMAS_SCAN_THRESHOLD == 0
+
+
+def test_xmas_reports_every_scanner_not_just_the_first():
+    """Guards the placement of the return statement.
+
+    A 'return' indented into the for loop exits after the first
+    iteration: the detector still works, still reports a real scanner,
+    and silently drops every other one. Nothing else in the suite
+    notices - a one-scanner fixture passes either way.
+    """
+    ctx = make_context()
+    ctx['xmas_scan_ports'] = {
+        '10.0.0.1': {80},
+        '10.0.0.2': {81},
+        '10.0.0.3': {82},
+    }
+
+    findings = detect_xmas_scan(ctx)
+
+    assert len(findings) == 3
+    assert {f['source'] for f in findings} == {'10.0.0.1', '10.0.0.2', '10.0.0.3'}
 
 
 # ======================================================================
