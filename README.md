@@ -3,7 +3,8 @@
 A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` captures — built to grow from generic traffic statistics into OT/ICS-aware threat detection.
 
 > **Status: early development (Phase 1).** Traffic statistics, IPv4/IPv6 accounting and five
-> scan detectors (SYN, FIN, UDP, NULL, XMAS) work today, with a pytest suite covering them. Industrial
+> scan detectors (SYN, FIN, UDP, NULL, XMAS) work today, alongside a machine-readable JSON
+> mode and a pytest suite covering them. Industrial
 > protocol support is the next milestone. See [Roadmap](#roadmap) for the honest state of things.
 
 ## Features
@@ -21,6 +22,9 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 - XMAS scan detection — TCP packets carrying FIN+PSH+URG together, a combination no
   legitimate stack produces
 - Detector registry — new detections plug in without touching the pipeline
+- JSON output mode (`--json`) — the full result as one structured document, versioned
+  by a `schema_version` field and ordered deterministically so two runs of the same
+  capture produce identical text
 - Terminal-aware report — width read from the terminal, addresses sorted numerically
   and laid out in columns, consecutive ports folded into ranges, colour emitted only
   when stdout is a TTY
@@ -35,7 +39,10 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 - ICMPv6 is not counted — `ICMP in packet` matches ICMP over IPv4 only
 - DNS is only counted over UDP; DNS over TCP (port 53) is missed
 - The whole capture is loaded into memory (`rdpcap`), so very large files will not work
-- Report export (JSON/CSV/HTML) is a stub, not implemented yet
+- The banner and the progress lines are still written to stdout rather than stderr, so
+  the JSON produced by `--json` cannot yet be piped straight into a parser — separating
+  the two streams is the next change
+- CSV and HTML export are not implemented
 - Error messages are printed to stdout and the process still exits 0, so a failed run
   is indistinguishable from a successful one to any script wrapping it
 - UDP scan detection depends on the target answering. Linux rate-limits ICMP
@@ -172,6 +179,78 @@ FINDINGS (1)
 Where a capture contains several techniques they are listed together in one block,
 most severe first.
 
+### JSON output
+
+```bash
+python main.py pcaps/test.pcapng --json
+```
+
+Prints the whole result as one document instead of the human report — the two modes are
+mutually exclusive, since mixing framed text into the stream would make it unparseable:
+
+```json
+{
+  "schema_version": 1,
+  "file": "pcaps/test.pcapng",
+  "packets": 40,
+  "stats": {
+    "protocols": {
+      "tcp": 29,
+      "udp": 6,
+      "icmp": 0,
+      "arp": 0,
+      "dns": 6
+    },
+    "layers": {
+      "ipv4": 31,
+      "ipv6": 9,
+      "arp": 0,
+      "other": 0
+    },
+    "unique_ipv4": [
+      "8.219.122.25",
+      "140.82.112.25",
+      "192.168.1.1",
+      "192.168.1.178"
+    ],
+    "unique_ipv6": [
+      "2a02:4e0:2dc0:1fb5:9017:c87a:fbc1:2",
+      "2a0b:21c0:c002:3:3::16",
+      "fe80::9217:c8ff:fe7a:fbc1",
+      "ff02::1:ffaa:7e64",
+      "ff02::1:ffd3:d108"
+    ],
+    "unique_ports": [
+      53,
+      443,
+      38609,
+      44128,
+      44340,
+      47218,
+      49948,
+      55642,
+      60478,
+      60620
+    ],
+    "packet_size": {
+      "min": 54,
+      "max": 2894,
+      "avg": 270
+    }
+  },
+  "findings": []
+}
+```
+
+`schema_version` is there so a consumer can detect a breaking change instead of failing
+silently on a renamed key. Address and port lists are sorted, so committing the output of
+successive runs produces meaningful diffs rather than reordering noise. Detector findings
+travel through unchanged — the same dictionaries the detectors return, which is the payoff
+of forbidding them to print.
+
+Note that the banner and progress lines currently share stdout with the JSON, so
+`--json | jq` does not work yet. See [Known limitations](#features).
+
 ### Running the tests
 
 ```bash
@@ -204,7 +283,7 @@ Phase 1 — generic static analysis:
 | Unit tests (pytest) | Done |
 | NULL scan detection (flagless TCP) | Done |
 | XMAS scan detection (FIN+PSH+URG) | Done |
-| JSON report output | Planned |
+| JSON report output (`--json`) | Done |
 | ARP spoofing detection (MITM precursor) | Planned |
 | Streaming reader for large captures (`PcapReader`) | Planned |
 | Non-zero exit code and stderr for failures | Planned |

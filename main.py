@@ -58,6 +58,7 @@ import report
 def parse_arg():
     parser = argparse.ArgumentParser(description = "Pcap-Triage analyse and threat hunting")
     parser.add_argument("pcap_file", help = "name of the .pcap file")
+    parser.add_argument("--json", action="store_true", help="If you need output for machine")
     return parser.parse_args()
 
 
@@ -114,12 +115,12 @@ def main():
     # ------------------------------------------------------------------
     # STAGE 3 - show the results.
     # ------------------------------------------------------------------
-        report.print_stats(ctx)
-        report.print_findings(findings)
-        report.report_generator()
-
-        report.print_ok("analysis complete")
-
+        if args.json:
+            report.print_json(ctx, findings, args.pcap_file)
+        else:
+            report.print_stats(ctx)
+            report.print_findings(findings)
+            report.print_ok("analysis complete")
 
 
 

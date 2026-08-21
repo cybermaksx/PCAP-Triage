@@ -45,7 +45,7 @@ Three problems the old version had, and how each is solved here:
 import ipaddress
 import shutil
 import sys
-
+import json 
 
 # ======================================================================
 # LAYOUT CONSTANTS
@@ -401,6 +401,47 @@ def print_findings(findings):
         print()
 
 
-def report_generator():
-    # coming soon
-    return
+def print_json(ctx, findings, source):
+    stats = ctx['stats']         
+
+    
+    if stats['packet_sizes']:
+        sizes = stats['packet_sizes']
+        size = {
+            "min": min(sizes),
+            "max": max(sizes),
+            "avg": round(sum(sizes) / len(sizes)),           
+        }
+    else:
+        size = None    
+
+    data = {
+        "schema_version": 1,
+        "file": source,
+        "packets": stats['total_packets'],
+        "stats": {
+            "protocols": {
+                "tcp": stats['tcp'],
+                "udp": stats['udp'],
+                "icmp": stats['icmp'],
+                "arp": stats['arp'],
+                "dns": stats['dns'],
+            },
+            "layers": {
+                "ipv4": stats['ipv4'],
+                "ipv6": stats['ipv6'],
+                "arp": stats['arp'],
+                "other": stats['other'],
+            },
+            # _sort_ips(), not sorted(): as text '192.168.1.9' sorts after
+            # '192.168.1.100'. The human report already orders addresses
+            # numerically, and both formats describe the same capture.
+            "unique_ipv4": _sort_ips(stats['unique_ips']),
+            "unique_ipv6": _sort_ips(stats['unique_ipv6']),
+            "unique_ports": sorted(stats['unique_ports']),
+            "packet_size": size,
+        },
+        "findings": findings,
+    }
+
+    print(json.dumps(data, indent=2))
