@@ -46,7 +46,7 @@ This file stays exactly as it is.
 from scapy.all import rdpcap
 from scapy.error import Scapy_Exception
 import argparse
-
+import sys
 # Our own modules. Note the direction of these imports: main.py imports the
 # other three, and none of them import main.py or each other. Keeping arrows
 # pointing one way is what prevents circular imports.
@@ -58,7 +58,8 @@ import report
 def parse_arg():
     parser = argparse.ArgumentParser(description = "Pcap-Triage analyse and threat hunting")
     parser.add_argument("pcap_file", help = "name of the .pcap file")
-    parser.add_argument("--json", action="store_true", help="If you need output for machine")
+    parser.add_argument("--json", action="store_true",
+                        help="print the result as JSON instead of the human report")
     return parser.parse_args()
 
 
@@ -125,19 +126,19 @@ def main():
 
 
     except FileNotFoundError:
-        print("File you entered doesn't exist")
-
+        report.print_error(f"{args.pcap_file}: no such file")
+        sys.exit(1)
 
 
 
     except PermissionError:
-        print("You don't have permisions to use this file")
-
+        report.print_error(f"{args.pcap_file}: permission denied")
+        sys.exit(1)
 
     except Scapy_Exception as e:
-        print(f"{e}Scappy error")   
+        report.print_error(f"{args.pcap_file}: not a valid capture ({e})")
 
-
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

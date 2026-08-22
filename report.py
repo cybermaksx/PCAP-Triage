@@ -244,24 +244,24 @@ def print_banner():
     # line of text, at no cost in dependencies or ASCII art.
     name = " ".join("PCAP-TRIAGE")
 
-    print()
-    print(_c("╔" + "═" * inner + "╗", _CYAN))
-    print(_c("║" + " " * inner + "║", _CYAN))
-    print(_c("║", _CYAN) + _c(f"   {name}".ljust(inner), _BOLD) + _c("║", _CYAN))
-    print(_c("║", _CYAN) + _c(f"   {_TAGLINE}".ljust(inner), _DIM) + _c("║", _CYAN))
-    print(_c("║" + " " * inner + "║", _CYAN))
-    print(_c("╚" + "═" * inner + "╝", _CYAN))
-    print()
+    print(file=sys.stderr)
+    print(_c("╔" + "═" * inner + "╗", _CYAN), file=sys.stderr)
+    print(_c("║" + " " * inner + "║", _CYAN), file=sys.stderr)
+    print(_c("║", _CYAN) + _c(f"   {name}".ljust(inner), _BOLD) + _c("║", _CYAN), file=sys.stderr)
+    print(_c("║", _CYAN) + _c(f"   {_TAGLINE}".ljust(inner), _DIM) + _c("║", _CYAN), file=sys.stderr)
+    print(_c("║" + " " * inner + "║", _CYAN), file=sys.stderr)
+    print(_c("╚" + "═" * inner + "╝", _CYAN), file=sys.stderr)
+    print(file=sys.stderr)
 
 
 def print_step(message):
     """A step that is starting. Dim, because it is not the result."""
-    print(_c(f"  · {message}", _DIM))
+    print(_c(f"  · {message}", _DIM), file=sys.stderr)
 
 
 def print_ok(message):
     """A step that finished. The marker is the only coloured part."""
-    print(f"  {_c('✓', _CYAN)} {message}")
+    print(f"  {_c('✓', _CYAN)} {message}", file=sys.stderr)
 
 
 def print_error(message):

@@ -28,9 +28,12 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 - Terminal-aware report — width read from the terminal, addresses sorted numerically
   and laid out in columns, consecutive ports folded into ranges, colour emitted only
   when stdout is a TTY
-- Graceful handling of missing, unreadable and non-capture files
+- Graceful handling of missing, unreadable and non-capture files — reported on stderr
+  with a non-zero exit code, so a wrapping script can tell a failed run from an
+  empty one
 - CLI interface via `argparse`
-- pytest suite — 34 tests over the collector, the detectors and the registry contract
+- pytest suite — 44 tests over the collector, the detectors, the registry contract and
+  both output modes
 
 **Known limitations**
 
@@ -39,12 +42,12 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 - ICMPv6 is not counted — `ICMP in packet` matches ICMP over IPv4 only
 - DNS is only counted over UDP; DNS over TCP (port 53) is missed
 - The whole capture is loaded into memory (`rdpcap`), so very large files will not work
-- The banner and the progress lines are still written to stdout rather than stderr, so
-  the JSON produced by `--json` cannot yet be piped straight into a parser — separating
-  the two streams is the next change
+- Colour is decided by whether stdout is a terminal, so piping the JSON into a parser
+  also strips the colour from the banner, which is on stderr and still on screen
+- Redirecting both streams into one file (`> out.txt 2>&1`) interleaves them out of
+  order, because stderr is unbuffered while a redirected stdout is not. On a terminal
+  the order is correct
 - CSV and HTML export are not implemented
-- Error messages are printed to stdout and the process still exits 0, so a failed run
-  is indistinguishable from a successful one to any script wrapping it
 - UDP scan detection depends on the target answering. Linux rate-limits ICMP
   unreachable replies to roughly one per second, which can suppress most of the
   evidence on a fast scan
@@ -248,14 +251,23 @@ successive runs produces meaningful diffs rather than reordering noise. Detector
 travel through unchanged — the same dictionaries the detectors return, which is the payoff
 of forbidding them to print.
 
-Note that the banner and progress lines currently share stdout with the JSON, so
-`--json | jq` does not work yet. See [Known limitations](#features).
+The banner and the progress lines go to stderr, not stdout, so they stay on screen while
+only the JSON travels through a pipe or a redirect:
+
+```bash
+python main.py capture.pcap --json | jq '.findings[].source'
+python main.py capture.pcap --json > result.json
+```
+
+Writing the file is left to the shell rather than to a `--output` flag: redirection already
+handles overwrite, append, permissions and paths, and keeping the result on stdout is what
+lets the same command feed a pipe instead.
 
 ### Running the tests
 
 ```bash
-python -m pytest -m "not slow"    # 29 tests, ~0.3 s
-python -m pytest                  # 34 tests, ~50 s
+python -m pytest -m "not slow"    # 39 tests, ~0.2 s
+python -m pytest                  # 44 tests, ~50 s
 ```
 
 The `-m` matters: a bare `pytest` does not put the project directory on the module
@@ -286,7 +298,7 @@ Phase 1 — generic static analysis:
 | JSON report output (`--json`) | Done |
 | ARP spoofing detection (MITM precursor) | Planned |
 | Streaming reader for large captures (`PcapReader`) | Planned |
-| Non-zero exit code and stderr for failures | Planned |
+| Non-zero exit code and stderr for failures | Done |
 
 Phase 2 — OT/ICS protocols, the actual goal of this project:
 
@@ -319,7 +331,8 @@ PCAP-Triage/
 ├── tests/
 │   ├── conftest.py           # Shared fixtures: one parsed context per capture
 │   ├── test_context.py       # Counter accuracy and the layer-coverage invariant
-│   └── test_detectors.py     # Thresholds, finding schema, registry contract
+│   ├── test_detectors.py     # Thresholds, finding schema, registry contract
+│   └── test_report.py        # JSON validity and which stream each helper writes to
 ├── pcaps/                    # Sample captures
 │   ├── test.pcapng           # 40 packets, mixed IPv4/IPv6, no scan
 │   ├── finscan.pcapng        # 221 packets, FIN scan
