@@ -296,7 +296,7 @@ Phase 1 — generic static analysis:
 | NULL scan detection (flagless TCP) | Done |
 | XMAS scan detection (FIN+PSH+URG) | Done |
 | JSON report output (`--json`) | Done |
-| ARP spoofing detection (MITM precursor) | Planned |
+| ARP spoofing detection (MITM precursor) | Done |
 | Streaming reader for large captures (`PcapReader`) | Planned |
 | Non-zero exit code and stderr for failures | Done |
 
