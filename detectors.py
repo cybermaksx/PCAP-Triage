@@ -47,6 +47,8 @@ FIN_SCAN_THRESHOLD = 5
 UDP_SCAN_THRESHOLD = 5
 NULL_SCAN_THRESHOLD = 0 #Packet should not be empty , if empty one comes most likely we are being scanned
 XMAS_SCAN_THRESHOLD = 0 #Same logic ,packet should not be this way
+MITM_ATTACK_THRESHOLD = 1
+
 
 def detect_syn_scan(ctx, threshold=SYN_SCAN_THRESHOLD):
     """Detect SYN port scanning.
@@ -187,10 +189,27 @@ def detect_xmas_scan(ctx, threshold=XMAS_SCAN_THRESHOLD):
     return found_threats
 
     
+def detect_mitm_attack(ctx , threshold=MITM_ATTACK_THRESHOLD):
 
-    
+    found_threats = []
+
+    for ip , macs in ctx['arp_table'].items():
+
+        if len(macs) > threshold:
+            mac_list = ', '.join(sorted(macs))
+            found_threats.append({
+            'type' : 'MITM_ATTACK',
+            'severity': 'HIGH',
+            'source' : ip,
+            'description': f'{ip} claimed by {len(macs)} MACs: {mac_list}',
+            
 
 
+                
+            })
+        
+
+    return found_threats 
 
 
 
@@ -208,4 +227,5 @@ DETECTORS = [
     detect_udp_scan,
     detect_null_scan,
     detect_xmas_scan,
+    detect_mitm_attack,
 ]
