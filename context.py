@@ -64,7 +64,7 @@ def make_context():
         'arp': 0,
         'dns': 0,
         'ipv4': 0,
-        'ipv6': 0,            
+        'ipv6': 0,
         'other': 0,
         'unique_ips': set(),
         'unique_ipv6': set(),
@@ -88,6 +88,7 @@ def make_context():
     udp_scan_ports = {}
     null_scan_ports = {}
     xmas_scan_ports = {}
+    arp_table = {}
     return {
         'stats': stats,
         'ip_ports': ip_ports,
@@ -95,6 +96,7 @@ def make_context():
         'udp_scan_ports': udp_scan_ports,
         'null_scan_ports': null_scan_ports,
         'xmas_scan_ports': xmas_scan_ports,
+        'arp_table': arp_table,
     }
 
 
@@ -245,16 +247,20 @@ def feed(ctx, packet, index):
          dst_port = packet[TCP].dport
 
          ctx['null_scan_ports'].setdefault(src_ip, set()).add(dst_port)
-        
 
-        
+
+
 
     if IP in packet and TCP in packet and packet[TCP].flags == 'FPU':
          src_ip = packet[IP].src
          dst_port = packet[TCP].dport
 
          ctx['xmas_scan_ports'].setdefault(src_ip, set()).add(dst_port)
-                
-        
-        
-            
+
+
+
+    if ARP in packet:
+        claimed_ip   = packet[ARP].psrc
+        claimed_mac = packet[ARP].hwsrc
+
+        ctx['arp_table'].setdefault(claimed_ip, set()).add(claimed_mac)
