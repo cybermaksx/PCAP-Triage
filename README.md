@@ -2,10 +2,11 @@
 
 A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` captures — built to grow from generic traffic statistics into OT/ICS-aware threat detection.
 
-> **Status: early development (Phase 1).** Traffic statistics, IPv4/IPv6 accounting and five
-> scan detectors (SYN, FIN, UDP, NULL, XMAS) work today, alongside a machine-readable JSON
-> mode and a pytest suite covering them. Industrial
-> protocol support is the next milestone. See [Roadmap](#roadmap) for the honest state of things.
+> **Status: Phase 1 complete.** Traffic statistics, IPv4/IPv6 accounting, five scan
+> detectors (SYN, FIN, UDP, NULL, XMAS) and ARP spoofing detection work today, on top of a
+> streaming reader that keeps memory flat on large captures, a machine-readable JSON mode
+> and a pytest suite. Industrial protocol support is the next milestone. See
+> [Roadmap](#roadmap) for the honest state of things.
 
 ## Features
 
@@ -21,6 +22,8 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 - NULL scan detection — TCP packets with no flags set at all, which no working stack sends
 - XMAS scan detection — TCP packets carrying FIN+PSH+URG together, a combination no
   legitimate stack produces
+- ARP spoofing detection — one IPv4 address claimed by more than one MAC, the signature
+  of a machine inserting itself into the path between two hosts
 - Detector registry — new detections plug in without touching the pipeline
 - JSON output mode (`--json`) — the full result as one structured document, versioned
   by a `schema_version` field and ordered deterministically so two runs of the same
@@ -28,6 +31,9 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 - Terminal-aware report — width read from the terminal, addresses sorted numerically
   and laid out in columns, consecutive ports folded into ranges, colour emitted only
   when stdout is a TTY
+- Streaming packet reader (`PcapReader`) — packets are parsed one at a time and
+  discarded, so peak memory does not grow with file size: a 12 MB / 131 428-packet
+  capture went from 696 MB to 89 MB
 - Graceful handling of missing, unreadable and non-capture files — reported on stderr
   with a non-zero exit code, so a wrapping script can tell a failed run from an
   empty one
@@ -41,7 +47,12 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   consumer has to read two keys instead of one
 - ICMPv6 is not counted — `ICMP in packet` matches ICMP over IPv4 only
 - DNS is only counted over UDP; DNS over TCP (port 53) is missed
-- The whole capture is loaded into memory (`rdpcap`), so very large files will not work
+- Packets themselves are streamed, but `stats['packet_sizes']` still keeps one entry
+  per packet, so memory has not been made fully constant in file size. Only min, max
+  and the average are read back from that list
+- ARP spoofing is judged over the whole capture with no baseline: an address that
+  changed hands via DHCP looks the same as an attack, and a spoof already underway
+  before the capture started is invisible if the real host stays silent throughout
 - Colour is decided by whether stdout is a terminal, so piping the JSON into a parser
   also strips the colour from the banner, which is on stderr and still on screen
 - Redirecting both streams into one file (`> out.txt 2>&1`) interleaves them out of
@@ -105,8 +116,8 @@ python main.py pcaps/test.pcapng
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
   · reading pcaps/udpscan.pcapng
-  ✓ loaded 873 packets
   · collecting facts
+  ✓ read 873 packets
   · running detectors
 
 OVERVIEW
@@ -267,7 +278,7 @@ lets the same command feed a pipe instead.
 
 ```bash
 python -m pytest -m "not slow"    # 39 tests, ~0.2 s
-python -m pytest                  # 44 tests, ~50 s
+python -m pytest                  # 44 tests, ~60 s
 ```
 
 The `-m` matters: a bare `pytest` does not put the project directory on the module
@@ -297,7 +308,7 @@ Phase 1 — generic static analysis:
 | XMAS scan detection (FIN+PSH+URG) | Done |
 | JSON report output (`--json`) | Done |
 | ARP spoofing detection (MITM precursor) | Done |
-| Streaming reader for large captures (`PcapReader`) | Planned |
+| Streaming reader for large captures (`PcapReader`) | Done |
 | Non-zero exit code and stderr for failures | Done |
 
 Phase 2 — OT/ICS protocols, the actual goal of this project:
@@ -437,7 +448,7 @@ top of them, and never as a replacement for them.
 Areas where help is welcome:
 
 - Additional protocol parsers (DNP3, S7comm, EtherNet/IP)
-- Additional detection logic (ARP spoofing, DNS tunneling, beaconing)
+- Additional detection logic (DNS tunneling, beaconing, DHCP spoofing)
 - Performance work for large captures
 - Report generation and output formats
 
