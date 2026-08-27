@@ -259,7 +259,7 @@ def feed(ctx, packet, index):
 
 
 
-    if ARP in packet:
+    if ARP in packet and packet[ARP].psrc!="0.0.0.0":
         claimed_ip   = packet[ARP].psrc
         claimed_mac = packet[ARP].hwsrc
 
