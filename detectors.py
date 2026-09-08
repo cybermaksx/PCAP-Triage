@@ -48,6 +48,9 @@ UDP_SCAN_THRESHOLD = 5
 NULL_SCAN_THRESHOLD = 0 #Packet should not be empty , if empty one comes most likely we are being scanned
 XMAS_SCAN_THRESHOLD = 0 #Same logic ,packet should not be this way
 MITM_ATTACK_THRESHOLD = 1
+DNS_TUNNEL_LABEL_THRESHOLD = 30
+DNS_TUNNEL_NAMES_THRESHOLD = 50
+
 
 
 def detect_syn_scan(ctx, threshold=SYN_SCAN_THRESHOLD):
@@ -212,15 +215,38 @@ def detect_mitm_attack(ctx , threshold=MITM_ATTACK_THRESHOLD):
     return found_threats 
 
 
-def detect_dns_tunnel(ctx):
+def detect_dns_tunnel(ctx,
+                      label_threshold=DNS_TUNNEL_LABEL_THRESHOLD,
+                      names_threshold=DNS_TUNNEL_NAMES_THRESHOLD):
+    """Find domains that are being used to carry data rather than to name hosts.
+
+    Two conditions, deliberately ANDed rather than ORed. Either one alone
+    fires on ordinary traffic: DKIM and CDN hostnames are long, and a big
+    CDN legitimately serves hundreds of distinct subdomains. Together they
+    almost never occur outside a tunnel.
+    """
+
     found_threats = []
 
+    for domain, data in ctx['dns_domains'].items():
 
+        if data['max_label'] > label_threshold and len(data['names']) > names_threshold:
 
+            # The domain is what is guilty, but an analyst starts from the
+            # machine, so the host goes in 'source' and the domain into the
+            # description.
+            host_list = ', '.join(sorted(data['sources']))
 
+            found_threats.append({
+                'type': 'DNS_TUNNEL',
+                'severity': 'HIGH',
+                'source': host_list,
+                'description': (f'{domain}: {len(data["names"])} unique names, '
+                                f'longest label {data["max_label"]} chars, '
+                                f'{data["txt"]} TXT queries'),
+            })
 
     return found_threats
-
 
 
 # ======================================================================

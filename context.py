@@ -269,29 +269,76 @@ def feed(ctx, packet, index):
 
 
 
+    # ------------------------------------------------------------------
+    # DNS tunneling. The smuggled data rides inside the NAME being asked
+    # about, not inside the addresses:  <payload>.tun.evil.com
+    # The resolver is the same one normal traffic uses, so src/dst IPs
+    # say nothing at all - the whole signal sits in qname.
+    #
+    # Three numbers give a tunnel away, and all three are collected here.
+    # Measured on newtest.pcapng, which is ordinary home traffic:
+    #
+    #   longest label     normal 6-17 chars; a tunnel pushes against 63,
+    #                     the maximum a DNS label is allowed to be
+    #   unique names      normal: 1 per domain - a browser re-asks the
+    #                     same name over and over. A tunnel: every query
+    #                     is different, that is the point of it
+    #   share of TXT      normal: 0%
+    #
+    # Grouped by DOMAIN, not by source IP - the first block in this file
+    # that is. Source IPs are collected too, so the finding can name the
+    # machine an analyst should go and look at.
+    # ------------------------------------------------------------------
     if DNS in packet and IP in packet and packet[DNS].qr == 0 and DNSQR in packet:
         src_ip = packet[IP].src
+
+        # scapy hands qname over as bytes, with the trailing root dot:
+        # b'music.youtube.com.'. Without rstrip, split() below leaves an
+        # empty last label and EVERY root domain comes out as 'com.'.
+        #
+        # errors='replace' rather than 'ignore' because a tunnel stuffs
+        # arbitrary bytes into the name: 'ignore' would silently drop them
+        # and shorten the string, and the length is one of the three
+        # things being measured here.
         qname = packet[DNSQR].qname.decode(errors='replace').rstrip('.')
 
         labels = qname.split('.')
 
         root = '.'.join(labels[-2:])
 
+        # mDNS is this detector's 0.0.0.0. Bonjour service names such as
+        # _googlecast._tcp.local reduce to a root of '_tcp.local', so every
+        # printer, TV and phone on the LAN piles into one bucket and looks
+        # exactly like many unique subdomains under a single domain. Nobody
+        # tunnels over mDNS - it never leaves the broadcast domain.
+        if not root.endswith('.local'):
 
+            # NOTE: only the FIRST question in the packet is read. A DNS
+            # packet may carry several (qdcount was 2 in 8 packets of
+            # newtest.pcapng), but all of those were mDNS and the filter
+            # above has already dropped them.
+            bucket = ctx['dns_domains'].setdefault(root, {
+                'queries': 0,
+                'max_label': 0,
+                'txt': 0,
+                'names': set(),
+                'sources': set(),
+            })
 
+            bucket['queries'] += 1
 
+            # max() of two things, not a plain assignment: the bucket keeps
+            # the record across ALL packets of this domain. Overwriting
+            # would leave the length of whichever name happened to come
+            # last, not the longest one.
+            longest_label = max(len(label) for label in labels)
+            bucket['max_label'] = max(bucket['max_label'], longest_label)
 
+            if packet[DNSQR].qtype == 16:      # 16 = TXT
+                bucket['txt'] += 1
 
-
-
-
-
-
-
-
-
-
-
-
-
-
+            # NOTE: 'names' grows with the file. It is the one structure
+            # here that is not constant in size, and it grows fastest on
+            # exactly the case this detector is for. See ROADMAP.
+            bucket['names'].add(qname)
+            bucket['sources'].add(src_ip)
