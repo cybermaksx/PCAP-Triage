@@ -27,7 +27,7 @@ one way:  main.py -> context.py / detectors.py / report.py.
 Importing in both directions would create a circular import and crash Python.
 """
 
-from scapy.all import IP, TCP, UDP, ICMP, ARP, DNS, IPv6, UDPerror
+from scapy.all import IP, TCP, UDP, ICMP, ARP, DNS, IPv6, UDPerror, DNSQR
 
 
 def make_context():
@@ -89,6 +89,7 @@ def make_context():
     null_scan_ports = {}
     xmas_scan_ports = {}
     arp_table = {}
+    dns_domains = {}
     return {
         'stats': stats,
         'ip_ports': ip_ports,
@@ -97,6 +98,7 @@ def make_context():
         'null_scan_ports': null_scan_ports,
         'xmas_scan_ports': xmas_scan_ports,
         'arp_table': arp_table,
+        'dns_domains': dns_domains,
     }
 
 
@@ -264,3 +266,32 @@ def feed(ctx, packet, index):
         claimed_mac = packet[ARP].hwsrc
 
         ctx['arp_table'].setdefault(claimed_ip, set()).add(claimed_mac)
+
+
+
+    if DNS in packet and IP in packet and packet[DNS].qr == 0 and DNSQR in packet:
+        src_ip = packet[IP].src
+        qname = packet[DNSQR].qname.decode(errors='replace').rstrip('.')
+
+        labels = qname.split('.')
+
+        root = '.'.join(labels[-2:])
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

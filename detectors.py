@@ -212,6 +212,16 @@ def detect_mitm_attack(ctx , threshold=MITM_ATTACK_THRESHOLD):
     return found_threats 
 
 
+def detect_dns_tunnel(ctx):
+    found_threats = []
+
+
+
+
+
+    return found_threats
+
+
 
 # ======================================================================
 # THE REGISTRY
@@ -228,4 +238,5 @@ DETECTORS = [
     detect_null_scan,
     detect_xmas_scan,
     detect_mitm_attack,
+    detect_dns_tunnel
 ]
