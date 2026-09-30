@@ -181,7 +181,9 @@ def test_default_report_truncates_the_order(capsys):
     report.print_findings([_scan_finding(ports)])
     out = capsys.readouterr().out
 
-    assert f'(+{50 - report.MAX_ORDER_SHOWN})' in out
+    order_line = next(line for line in out.splitlines() if 'order' in line)
+    assert '… (+' in order_line
+    assert len(order_line) <= report._width()     # cut short, never wrapped
     assert 'timeline' not in out
 
 

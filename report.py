@@ -471,8 +471,17 @@ def print_findings(findings, full=False):
             if full:
                 _print_timeline(timeline)
             else:
-                order = ' → '.join(_step(entry) for entry in timeline[:MAX_ORDER_SHOWN])
-                hidden = len(timeline) - MAX_ORDER_SHOWN
+                # As many steps as fit on one line, up to MAX_ORDER_SHOWN.
+                # 13 = indent + label column, 26 = room for the
+                # "… (+65520)  [randomised]" tail.
+                budget = _width() - 13 - 26
+                steps = []
+                for entry in timeline[:MAX_ORDER_SHOWN]:
+                    if steps and len(' → '.join(steps + [_step(entry)])) > budget:
+                        break
+                    steps.append(_step(entry))
+                order = ' → '.join(steps)
+                hidden = len(timeline) - len(steps)
                 if hidden > 0:
                     order += f" {_c(f'… (+{hidden})', _DIM)}"
                 if 'sequential' in threat:

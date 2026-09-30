@@ -3,10 +3,12 @@
 A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` captures — built to grow from generic traffic statistics into OT/ICS-aware threat detection.
 
 > **Status: Phase 1 complete.** Traffic statistics, IPv4/IPv6 accounting, five scan
-> detectors (SYN, FIN, UDP, NULL, XMAS) and ARP spoofing detection work today, on top of a
-> streaming reader that keeps memory flat on large captures, a machine-readable JSON mode
-> and a pytest suite. Industrial protocol support is the next milestone. See
-> [Roadmap](#roadmap) for the honest state of things.
+> detectors (SYN, FIN, UDP, NULL, XMAS), ARP spoofing and DNS tunneling detection work
+> today. Every finding says when it started and ended, which Wireshark frame to look at,
+> and in what order the ports were hit. All of it sits on top of a streaming reader that
+> keeps memory flat on large captures, a machine-readable JSON mode and a pytest suite.
+> Industrial protocol support is the next milestone. See [Roadmap](#roadmap) for the
+> honest state of things.
 
 ## Features
 
@@ -23,7 +25,18 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 - XMAS scan detection — TCP packets carrying FIN+PSH+URG together, a combination no
   legitimate stack produces
 - ARP spoofing detection — one IPv4 address claimed by more than one MAC, the signature
-  of a machine inserting itself into the path between two hosts
+  of a machine inserting itself into the path between two hosts. The attack is dated
+  from the moment the *second* MAC appears, since the first is normally the real owner
+- DNS tunneling detection — a domain with both unusually long labels and an unusually
+  large number of distinct names, the shape of data smuggled out inside DNS queries
+- Timing on every finding — start and end time (UTC), the Wireshark frame number of the
+  first and last packet (`frame.number == N` jumps straight to it), duration, and probe
+  rate in ports per second
+- Scan order — the order in which a scanner first touched each port, with a tag saying
+  whether the walk was `sequential` (`nmap -r`, a hand-written script) or `randomised`
+  (nmap's default)
+- Full mode (`--full`) — lifts every truncation limit and prints a per-packet timeline
+  for each finding
 - Detector registry — new detections plug in without touching the pipeline
 - JSON output mode (`--json`) — the full result as one structured document, versioned
   by a `schema_version` field and ordered deterministically so two runs of the same
@@ -38,8 +51,8 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   with a non-zero exit code, so a wrapping script can tell a failed run from an
   empty one
 - CLI interface via `argparse`
-- pytest suite — 44 tests over the collector, the detectors, the registry contract and
-  both output modes
+- pytest suite — 55 tests over the collector, the detectors, the registry contract and
+  all output modes
 
 **Known limitations**
 
@@ -59,9 +72,18 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   order, because stderr is unbuffered while a redirected stdout is not. On a terminal
   the order is correct
 - CSV and HTML export are not implemented
+- The scan order is the order of first appearance **in the file**, while `start` is the
+  earliest **timestamp**. Captures merged from several interfaces can hold a packet
+  stamped slightly earlier than the one before it (`finscan.pcapng`, frames 11 and 12),
+  and then the two disagree on which packet came first
+- The per-port timeline keeps one entry for every distinct (scanner, port) pair, so a
+  full-range scan costs around 65 000 small entries of memory. Fine at the sizes tested
+  here, not yet bounded
 - UDP scan detection depends on the target answering. Linux rate-limits ICMP
   unreachable replies to roughly one per second, which can suppress most of the
-  evidence on a fast scan
+  evidence on a fast scan. The same limit shows up in the probe rate: `udpscan.pcapng`
+  reports `1 ports/s`, which is the target's reply rate, not the scanner's speed. The
+  times on a UDP finding are those of the ICMP replies, not of the probes themselves
 - NULL and XMAS detection fire on a single packet by design, so a broken stack or a
   middlebox rewriting flags will produce a finding where there is no scan
 - The NULL, FIN and XMAS scans they detect are themselves ineffective against Windows,
@@ -96,7 +118,7 @@ pip install -r requirements-dev.txt
 ## Usage
 
 ```bash
-python main.py <capture.pcap>
+python main.py <capture.pcap> [--json] [--full]
 ```
 
 Example:
@@ -127,6 +149,8 @@ OVERVIEW
     Unique IPv6 hosts           0
     Unique ports              132
     Packet size         42–7066 bytes (avg 208)
+    First packet        2026-08-19 01:16:45.802 UTC
+    Last packet         2026-08-19 01:18:28.713 UTC  (102.91 s)
 
 PROTOCOLS
 ────────────────────────────────────────────────────────────────────────────────
@@ -157,12 +181,16 @@ FINDINGS (1)
     ▸ UDP_SCAN  HIGH  from 192.168.1.99
       192.168.1.99 sent UDP to 93 unique ports
       ports  7, 9, 17, 19, 49, 67-69, 80, 88, 111, 120, 123, 135-139  (+75 more)
+      start  2026-08-19 01:16:48.464 UTC  (frame 10)
+      end    2026-08-19 01:18:19.089 UTC  (frame 765)
+      span   90.625 s  ·  1 ports/s
+      order  32815 → 515 → 5060 → 2000 → 1025 → 445 … (+87)  [randomised]
 
   ✓ analysis complete
 ```
 
 The report adapts to the terminal: separators and bars are sized to the current
-width, and long address and port lists are truncated rather than wrapped. Colour
+width, and long address, port and order lists are truncated rather than wrapped. Colour
 is emitted only when stdout is a TTY, so piping the output into a file or into
 `grep` yields clean text.
 
@@ -171,8 +199,9 @@ SYN scan in `pcaps/synscan.pcapng` reports its 65 535 ports as `1-65535` instead
 a single 447 000-character line.
 
 Every detector reports through the same format, so findings from different
-techniques print uniformly. The `FINDINGS` block from `synscan.pcapng` and from
-`finscan.pcapng`:
+techniques print uniformly. Each line is printed only when the finding carries the
+data for it — an ARP finding has no ports, a scan finding has no MACs. The `FINDINGS`
+block from `synscan.pcapng` and from `arpspoof.pcapng`:
 
 ```
 FINDINGS (1)
@@ -180,18 +209,58 @@ FINDINGS (1)
     ▸ PORT_SCAN  HIGH  from 192.168.1.99
       192.168.1.99 scanned 65535 unique ports
       ports  1-65535
+      start  2026-08-14 22:09:38.880 UTC  (frame 35)
+      end    2026-08-14 22:10:20.197 UTC  (frame 131404)
+      span   41.317 s  ·  1586 ports/s
+      order  8888 → 8080 → 5900 → 587 → 25 → 554 → 199 … (+65528)  [randomised]
 ```
 
 ```
-FINDINGS (1)
+FINDINGS (2)
 ────────────────────────────────────────────────────────────────────────────────
-    ▸ FIN_SCAN  HIGH  from 192.168.1.99
-      192.168.1.99 sent bare FIN to 100 unique ports
-      ports  7, 9, 13, 21-23, 25-26, 37, 53, 79-81, 88, 106, 110-111, 113  (+82 more)
+    ▸ MITM_ATTACK  HIGH  from 192.168.1.6
+      192.168.1.6 claimed by 2 MACs: 00:0c:29:de:ad:be, 4c:0f:3e:25:87:80
+      start  2026-09-08 22:32:59.364 UTC  (frame 5)
+      order  4c:0f:3e:25:87:80 → 00:0c:29:de:ad:be
 ```
+
+Times are printed in UTC so a report means the same moment on every machine it is
+passed to. Wireshark can be switched to match under *View → Time Display Format →
+UTC Date and Time of Day*.
 
 Where a capture contains several techniques they are listed together in one block,
 most severe first.
+
+### Full output
+
+```bash
+python main.py pcaps/finscan.pcapng --full
+```
+
+The default report is cut to fit one screen. `--full` removes every limit — all
+addresses, every port range, the complete order — and adds a timeline under each
+finding, one line per probe, in the order it happened:
+
+```
+      timeline
+        frame  11  2026-08-14 22:12:05.867 UTC     +0.000s  → 8080
+        frame  12  2026-08-14 22:12:05.867 UTC     +0.000s  → 445
+        frame  15  2026-08-14 22:12:05.867 UTC     +0.000s  → 5900
+        frame  16  2026-08-14 22:12:05.867 UTC     +0.000s  → 199
+        ...
+```
+
+The `+s` column is time since the first probe, which makes bursts and pauses visible
+without subtracting timestamps by hand. On a full-range scan this is tens of thousands
+of lines, so page it:
+
+```bash
+python main.py pcaps/synscan.pcapng --full | less -R
+```
+
+`--full` only changes the human report. Detectors always return everything; the
+truncation happens in `report.py` alone, and `--json` carries the complete data either
+way.
 
 ### JSON output
 
@@ -250,7 +319,9 @@ mutually exclusive, since mixing framed text into the stream would make it unpar
       "min": 54,
       "max": 2894,
       "avg": 270
-    }
+    },
+    "first_ts": 1785670164.6610777,
+    "last_ts": 1785670168.6524422
   },
   "findings": []
 }
@@ -261,6 +332,11 @@ silently on a renamed key. Address and port lists are sorted, so committing the 
 successive runs produces meaningful diffs rather than reordering noise. Detector findings
 travel through unchanged — the same dictionaries the detectors return, which is the payoff
 of forbidding them to print.
+
+Times in the JSON are epoch seconds (`first_ts`, and `start` / `end` on each finding), so
+a consumer converts one number rather than parsing a formatted string. Every scan finding
+also carries its full `timeline` — a list of `{"port", "time", "frame"}` in the order the
+ports were hit — with or without `--full`.
 
 The banner and the progress lines go to stderr, not stdout, so they stay on screen while
 only the JSON travels through a pipe or a redirect:
@@ -277,8 +353,8 @@ lets the same command feed a pipe instead.
 ### Running the tests
 
 ```bash
-python -m pytest -m "not slow"    # 39 tests, ~0.2 s
-python -m pytest                  # 44 tests, ~60 s
+python -m pytest -m "not slow"    # 50 tests, ~0.2 s
+python -m pytest                  # 55 tests, ~45 s
 ```
 
 The `-m` matters: a bare `pytest` does not put the project directory on the module
@@ -310,6 +386,9 @@ Phase 1 — generic static analysis:
 | ARP spoofing detection (MITM precursor) | Done |
 | Streaming reader for large captures (`PcapReader`) | Done |
 | Non-zero exit code and stderr for failures | Done |
+| DNS tunneling detection (label length + unique names) | Done |
+| Start / end time, frame numbers and scan order on findings | Done |
+| Full untruncated report with per-packet timeline (`--full`) | Done |
 
 Phase 2 — OT/ICS protocols, the actual goal of this project:
 
@@ -324,7 +403,7 @@ Phase 3 — later, no timeline:
 
 | Feature | Status |
 |---|---|
-| DNS tunneling heuristics (entropy / label length) | Planned |
+| DNS tunneling: entropy scoring on top of the current thresholds | Planned |
 | TLS JA3 fingerprinting | Planned |
 | Beaconing / C2 interval analysis | Planned |
 | Real-time capture | Future |
@@ -346,9 +425,12 @@ PCAP-Triage/
 │   └── test_report.py        # JSON validity and which stream each helper writes to
 ├── pcaps/                    # Sample captures
 │   ├── test.pcapng           # 40 packets, mixed IPv4/IPv6, no scan
+│   ├── newtest.pcapng        # 883 packets, ordinary home traffic, no findings
 │   ├── finscan.pcapng        # 221 packets, FIN scan
 │   ├── synscan.pcapng        # 131 428 packets, full-range SYN scan
-│   └── udpscan.pcapng        # 873 packets, UDP scan
+│   ├── udpscan.pcapng        # 873 packets, UDP scan
+│   ├── arpspoof.pcapng       # 5 packets, ARP spoofing of two hosts
+│   └── dnstunnel.pcapng      # 212 packets, DNS tunnel
 ├── pytest.ini
 ├── requirements.txt
 ├── requirements-dev.txt
@@ -363,9 +445,12 @@ pcap file ──> context ──> findings ──> output
              (facts)    (conclusions)
 ```
 
-`main.py` walks over the packets exactly once and hands each one to `feed()`. The context is
-a plain dictionary built by `make_context()`, holding the traffic counters plus one key of
-raw material per detector. Detectors then read that dictionary rather than the packets
+`main.py` walks over the packets exactly once and hands each one to `feed()`, together with
+its position in the file — that position becomes the frame number every finding points at.
+The context is a plain dictionary built by `make_context()`, holding the traffic counters
+plus one key of raw material per detector. For the scan detectors that raw material is a
+record per source address: first and last time and frame, and a `port -> (time, frame)`
+dict whose insertion order is the order the ports were first hit. Detectors then read that dictionary rather than the packets
 themselves, and return findings in a common format. `report.py` is the only module that
 prints — detectors never do, which is what makes them testable without a capture file.
 
@@ -448,7 +533,7 @@ top of them, and never as a replacement for them.
 Areas where help is welcome:
 
 - Additional protocol parsers (DNP3, S7comm, EtherNet/IP)
-- Additional detection logic (DNS tunneling, beaconing, DHCP spoofing)
+- Additional detection logic (beaconing, DHCP spoofing)
 - Performance work for large captures
 - Report generation and output formats
 
