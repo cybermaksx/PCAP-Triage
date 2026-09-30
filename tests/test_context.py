@@ -141,14 +141,14 @@ def test_syn_material_collected(synscan_ctx):
     ip_ports = synscan_ctx['ip_ports']
 
     assert '192.168.1.99' in ip_ports
-    assert len(ip_ports['192.168.1.99']) == 65535
+    assert len(ip_ports['192.168.1.99']['ports']) == 65535
 
 
 def test_fin_material_collected(finscan_ctx):
     fin_ports = finscan_ctx['fin_scan_ports']
 
     assert '192.168.1.99' in fin_ports
-    assert len(fin_ports['192.168.1.99']) == 100
+    assert len(fin_ports['192.168.1.99']['ports']) == 100
 
 
 @pytest.mark.slow
@@ -159,3 +159,31 @@ def test_syn_and_fin_material_stay_separate(synscan_ctx):
     packet, so a wrong flag comparison would silently populate both.
     """
     assert synscan_ctx['fin_scan_ports'] == {}
+
+
+# ======================================================================
+# Time and frame numbers.
+# ======================================================================
+
+def test_scan_record_frames_point_at_real_packets(finscan_ctx):
+    """first_frame must be 1-based like Wireshark, and inside the file."""
+    scan = finscan_ctx['fin_scan_ports']['192.168.1.99']
+    total = finscan_ctx['stats']['total_packets']
+
+    assert 1 <= scan['first_frame'] <= scan['last_frame'] <= total
+    assert scan['first_ts'] <= scan['last_ts']
+
+
+def test_scan_record_ports_are_in_first_seen_order(finscan_ctx):
+    """Iterating 'ports' must walk forward in time - that IS the order."""
+    steps = list(finscan_ctx['fin_scan_ports']['192.168.1.99']['ports'].values())
+
+    frames = [frame for _, frame in steps]
+    assert frames == sorted(frames)
+
+
+def test_capture_time_span_recorded(finscan_ctx):
+    stats = finscan_ctx['stats']
+
+    assert stats['first_ts'] is not None
+    assert stats['first_ts'] <= stats['last_ts']

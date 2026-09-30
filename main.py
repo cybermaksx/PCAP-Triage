@@ -60,6 +60,9 @@ def parse_arg():
     parser.add_argument("pcap_file", help = "name of the .pcap file")
     parser.add_argument("--json", action="store_true",
                         help="print the result as JSON instead of the human report")
+    parser.add_argument("--full", action="store_true",
+                        help="show everything: no truncated lists, full per-packet "
+                             "timeline for every finding (long - pipe it into less -R)")
     return parser.parse_args()
 
 
@@ -128,8 +131,8 @@ def main():
         if args.json:
             report.print_json(ctx, findings, args.pcap_file)
         else:
-            report.print_stats(ctx)
-            report.print_findings(findings)
+            report.print_stats(ctx, full=args.full)
+            report.print_findings(findings, full=args.full)
             report.print_ok("analysis complete")
 
     except FileNotFoundError:

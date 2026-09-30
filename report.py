@@ -20,7 +20,7 @@ The first two stages produce data. Only this stage turns data into text, so
 adding a second output format means adding a function here and nothing else.
 
 This module imports nothing from the project. It is handed finished data and
-formats it - that is all it does. The standard library is fair game; the four
+formats it - that is all it does. The standard library is fair game; the
 imports below are all it needs.
 
 HOW THE LAYOUT WORKS
@@ -40,12 +40,22 @@ Three problems the old version had, and how each is solved here:
   3. Port lists printed one number at a time. A scan hits consecutive ports,
      so "1, 2, 3, ..., 1024" is folded into "1-1024" - the same information in
      seven characters instead of five thousand.
+
+FULL MODE
+---------
+Every limit below (MAX_PORT_GROUPS, MAX_ADDRESSES_SHOWN, MAX_ORDER_SHOWN)
+exists to keep the report readable on one screen. "main.py x.pcap --full"
+lifts all of them and adds a per-packet timeline to every finding. The
+flag travels as a 'full' argument with a False default, so the analysis
+stages never hear about it: detectors always return everything, and only
+this file decides how much of it to show.
 """
 
 import ipaddress
 import shutil
 import sys
-import json 
+import json
+from datetime import datetime, timezone
 
 # ======================================================================
 # LAYOUT CONSTANTS
@@ -59,6 +69,11 @@ MAX_PORT_GROUPS = 12
 
 # Same idea for address lists.
 MAX_ADDRESSES_SHOWN = 24
+
+# How many steps of a finding's order ("443 → 22 → 80 ...") to show.
+# The order is the whole point of that line, so it cannot be folded into
+# ranges the way the port list is - it is cut short instead.
+MAX_ORDER_SHOWN = 15
 
 # Width limits. Below 60 the columns stop making sense; above 100 long lines
 # become hard to scan even if the terminal is wide enough to hold them.
@@ -168,13 +183,13 @@ def _format_ports(ports, max_groups=MAX_PORT_GROUPS):
     """Ports as one compact line, truncated if there are too many groups.
 
     The "+N more" counts PORTS, not ranges - "+83 more" is a useful number,
-    "+7 more ranges" is not.
+    "+7 more ranges" is not. max_groups=None means no limit (--full).
     """
     if not ports:
         return "none"
 
     groups = _fold_ports(ports)
-    if len(groups) <= max_groups:
+    if max_groups is None or len(groups) <= max_groups:
         return ", ".join(groups)
 
     shown = groups[:max_groups]
@@ -209,6 +224,27 @@ def _columns(items, indent=4, gap=2):
         row = items[start:start + per_line]
         lines.append(" " * indent + "".join(item.ljust(cell) for item in row).rstrip())
     return lines
+
+
+def _ts(epoch):
+    """Epoch seconds -> '2026-10-01 12:00:01.123 UTC'.
+
+    UTC rather than local time: a report gets passed around, and "12:00"
+    means a different moment on every analyst's machine. Wireshark can be
+    switched to UTC too (View -> Time Display Format -> UTC Date and Time).
+    """
+    moment = datetime.fromtimestamp(epoch, tz=timezone.utc)
+    return moment.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3] + ' UTC'
+
+
+def _field(label, value):
+    """One labelled detail line under a finding, labels in one column."""
+    return f"      {_c(f'{label:<7}', _DIM)}{value}"
+
+
+def _step(entry):
+    """What a timeline entry is about: a port for scans, a MAC for ARP."""
+    return str(entry.get('port', entry.get('mac', '?')))
 
 
 def _bar(count, total, space):
@@ -274,12 +310,14 @@ def print_error(message):
 # THE REPORT
 # ======================================================================
 
-def print_stats(ctx, source=None):
+def print_stats(ctx, source=None, full=False):
     """Print the traffic statistics block.
 
     'source' is optional and unused by main.py today - pass the capture
     filename to have it appear in the header. It defaults to None so that
     the existing call, report.print_stats(ctx), keeps working unchanged.
+
+    'full' lifts the address and port limits (--full).
     """
 
     stats = ctx['stats']  # local alias, so the lines below stay readable
@@ -315,6 +353,12 @@ def print_stats(ctx, source=None):
         average = sum(sizes) / len(sizes)
         print(f"    {'Packet size':<20}{min(sizes)}–{max(sizes)} bytes "
               f"{_c(f'(avg {average:.0f})', _DIM)}")
+
+    if stats['first_ts'] is not None:
+        span = stats['last_ts'] - stats['first_ts']
+        print(f"    {'First packet':<20}{_ts(stats['first_ts'])}")
+        print(f"    {'Last packet':<20}{_ts(stats['last_ts'])}  "
+              f"{_c(f'({span:.2f} s)', _DIM)}")
 
     # ---------------- protocols ----------------
     print(_heading("protocols"))
@@ -352,24 +396,32 @@ def print_stats(ctx, source=None):
         print(f"  {label} ({len(addresses)})")
 
         listed = _sort_ips(addresses)
-        hidden = len(listed) - MAX_ADDRESSES_SHOWN
-        for line in _columns(listed[:MAX_ADDRESSES_SHOWN]):
+        limit = len(listed) if full else MAX_ADDRESSES_SHOWN
+        hidden = len(listed) - limit
+        for line in _columns(listed[:limit]):
             print(line)
         if hidden > 0:
             print(_c(f"    (+{hidden} more)", _DIM))
 
     # ---------------- ports ----------------
     print(_heading(f"ports seen ({len(stats['unique_ports'])})"))
-    print(f"    {_format_ports(stats['unique_ports'])}")
+    groups = None if full else MAX_PORT_GROUPS
+    print(f"    {_format_ports(stats['unique_ports'], groups)}")
 
 
-def print_findings(findings):
+def print_findings(findings, full=False):
     """Print the list of findings returned by the detectors.
 
     Prints from the generic fields every finding shares ('type', 'severity',
     'source', 'description', 'ports') instead of hard-coded wording, so this
     function works the same for SYN_SCAN, FIN_SCAN, UDP_SCAN, or any future
     detector without needing to change.
+
+    The time fields ('start', 'end', 'duration', 'rate', 'timeline') are
+    optional in the same way 'ports' is - each line is printed only when
+    the finding carries the field it needs.
+
+    'full' prints every port and the complete per-packet timeline (--full).
     """
 
     print(_heading(f"findings ({len(findings)})"))
@@ -397,8 +449,57 @@ def print_findings(findings):
         # would raise KeyError and kill the whole run.
         ports = threat.get('ports')
         if ports:
-            print(f"      {_c('ports', _DIM)}  {_format_ports(ports)}")
+            groups = None if full else MAX_PORT_GROUPS
+            print(_field('ports', _format_ports(ports, groups)))
+
+        # "(frame N)" is what makes a finding checkable: Wireshark filter
+        # frame.number == N jumps straight to the packet.
+        if threat.get('start') is not None:
+            print(_field('start', f"{_ts(threat['start'])}  "
+                                  f"{_c(f'(frame {threat['first_frame']})', _DIM)}"))
+        if threat.get('end') is not None:
+            print(_field('end', f"{_ts(threat['end'])}  "
+                                f"{_c(f'(frame {threat['last_frame']})', _DIM)}"))
+        if threat.get('duration') is not None:
+            span = f"{threat['duration']:.3f} s"
+            if threat.get('rate'):
+                span += f"  ·  {threat['rate']:.0f} ports/s"
+            print(_field('span', span))
+
+        timeline = threat.get('timeline')
+        if timeline:
+            if full:
+                _print_timeline(timeline)
+            else:
+                order = ' → '.join(_step(entry) for entry in timeline[:MAX_ORDER_SHOWN])
+                hidden = len(timeline) - MAX_ORDER_SHOWN
+                if hidden > 0:
+                    order += f" {_c(f'… (+{hidden})', _DIM)}"
+                if 'sequential' in threat:
+                    walk = 'sequential' if threat['sequential'] else 'randomised'
+                    order += f"  {_c(f'[{walk}]', _DIM)}"
+                print(_field('order', order))
         print()
+
+
+def _print_timeline(timeline):
+    """Every step of a finding, one line each, in the order it happened.
+
+    The "+s" column is time since the first step, which makes pauses and
+    bursts visible at a glance - reading them off absolute timestamps
+    means subtracting in your head.
+    """
+    print(_field('timeline', ''))
+    # min(), not timeline[0]: the list is in FILE order, and a capture can
+    # hold a packet stamped slightly earlier than the one before it (seen
+    # in finscan.pcapng, frames 11 and 12). Offsets from the first line
+    # would then go negative.
+    start = min(entry['time'] for entry in timeline)
+    frame_width = len(str(max(entry['frame'] for entry in timeline)))
+    for entry in timeline:
+        offset = f"+{entry['time'] - start:.3f}s"
+        print(f"        {_c('frame', _DIM)} {entry['frame']:>{frame_width}}  "
+              f"{_ts(entry['time'])}  {_c(f'{offset:>10}', _DIM)}  → {_step(entry)}")
 
 
 def print_json(ctx, findings, source):
@@ -440,6 +541,10 @@ def print_json(ctx, findings, source):
             "unique_ipv6": _sort_ips(stats['unique_ipv6']),
             "unique_ports": sorted(stats['unique_ports']),
             "packet_size": size,
+            # Epoch seconds, same as every time field in the findings:
+            # a consumer converts one number, not a locale-specific string.
+            "first_ts": stats['first_ts'],
+            "last_ts": stats['last_ts'],
         },
         "findings": findings,
     }

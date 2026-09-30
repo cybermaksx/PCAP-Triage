@@ -18,10 +18,28 @@ from detectors import (
     SYN_SCAN_THRESHOLD,
     XMAS_SCAN_THRESHOLD,
     detect_fin_scan,
+    detect_mitm_attack,
     detect_null_scan,
     detect_syn_scan,
     detect_xmas_scan,
 )
+
+
+def _scan(ports, start=1000.0, step=0.01):
+    """A scan record the way feed() builds it, from a plain port list.
+
+    Probes are spaced 'step' seconds apart and numbered as frames 1, 2, 3...
+    in the order given - so the ORDER of 'ports' is meaningful. Pass a
+    list to control it; a set gives whatever order Python iterates it in.
+    """
+    ports = list(dict.fromkeys(ports))          # drop duplicates, keep order
+    record = {'ports': {}}
+    for i, port in enumerate(ports):
+        record['ports'][port] = (start + i * step, i + 1)
+    last = start + max(len(ports) - 1, 0) * step
+    record.update(first_ts=start, last_ts=last,
+                  first_frame=1, last_frame=max(len(ports), 1))
+    return record
 
 
 # ======================================================================
@@ -29,7 +47,7 @@ from detectors import (
 # ======================================================================
 
 def test_syn_fires_above_threshold():
-    ctx = {'ip_ports': {'10.0.0.1': set(range(50))}}
+    ctx = {'ip_ports': {'10.0.0.1': _scan(set(range(50)))}}
 
     findings = detect_syn_scan(ctx)
 
@@ -45,7 +63,7 @@ def test_syn_silent_below_threshold():
     A detector that fires on everything is exactly as useless as one
     that never fires, and only this test can tell the two apart.
     """
-    ctx = {'ip_ports': {'10.0.0.1': {22, 80, 443}}}
+    ctx = {'ip_ports': {'10.0.0.1': _scan({22, 80, 443})}}
 
     assert detect_syn_scan(ctx) == []
 
@@ -66,7 +84,7 @@ def test_syn_threshold_boundary(count, expected):
     nothing else in the suite would notice. @parametrize runs this
     function once per row and reports each as its own test.
     """
-    ctx = {'ip_ports': {'10.0.0.1': set(range(count))}}
+    ctx = {'ip_ports': {'10.0.0.1': _scan(set(range(count)))}}
 
     assert len(detect_syn_scan(ctx)) == expected
 
@@ -77,7 +95,7 @@ def test_syn_threshold_argument_overrides_default():
     This is why the threshold is a parameter and not a hard constant -
     see the docstring on detect_syn_scan.
     """
-    ctx = {'ip_ports': {'10.0.0.1': {1, 2, 3}}}
+    ctx = {'ip_ports': {'10.0.0.1': _scan({1, 2, 3})}}
 
     assert detect_syn_scan(ctx) == []
     assert len(detect_syn_scan(ctx, threshold=2)) == 1
@@ -85,9 +103,9 @@ def test_syn_threshold_argument_overrides_default():
 
 def test_syn_reports_each_source_separately():
     ctx = {'ip_ports': {
-        '10.0.0.1': set(range(50)),
-        '10.0.0.2': set(range(50)),
-        '10.0.0.3': {80},            # below threshold, must be skipped
+        '10.0.0.1': _scan(set(range(50))),
+        '10.0.0.2': _scan(set(range(50))),
+        '10.0.0.3': _scan({80}),            # below threshold, must be skipped
     }}
 
     findings = detect_syn_scan(ctx)
@@ -103,7 +121,7 @@ def test_syn_ports_are_sorted_list():
     subscriptable), and an unsorted list would make the truncated
     output non-deterministic. The contract is: a sorted list.
     """
-    ctx = {'ip_ports': {'10.0.0.1': {443, 22, 8080, *range(30)}}}
+    ctx = {'ip_ports': {'10.0.0.1': _scan([443, 22, 8080, *range(30)])}}
 
     ports = detect_syn_scan(ctx)[0]['ports']
 
@@ -116,7 +134,7 @@ def test_syn_ports_are_sorted_list():
 # ======================================================================
 
 def test_fin_fires_above_threshold():
-    ctx = {'fin_scan_ports': {'10.0.0.1': set(range(50))}}
+    ctx = {'fin_scan_ports': {'10.0.0.1': _scan(set(range(50)))}}
 
     findings = detect_fin_scan(ctx)
 
@@ -126,7 +144,7 @@ def test_fin_fires_above_threshold():
 
 
 def test_fin_silent_below_threshold():
-    ctx = {'fin_scan_ports': {'10.0.0.1': {22, 80}}}
+    ctx = {'fin_scan_ports': {'10.0.0.1': _scan({22, 80})}}
 
     assert detect_fin_scan(ctx) == []
 
@@ -136,7 +154,7 @@ def test_fin_silent_below_threshold():
     (FIN_SCAN_THRESHOLD + 1, 1),
 ])
 def test_fin_threshold_boundary(count, expected):
-    ctx = {'fin_scan_ports': {'10.0.0.1': set(range(count))}}
+    ctx = {'fin_scan_ports': {'10.0.0.1': _scan(set(range(count)))}}
 
     assert len(detect_fin_scan(ctx)) == expected
 
@@ -148,8 +166,8 @@ def test_detectors_read_only_their_own_bucket():
     detector reached across into a bucket that is not its own, this
     would raise KeyError instead of returning an empty list.
     """
-    assert detect_syn_scan({'ip_ports': {}, 'fin_scan_ports': {'x': set(range(50))}}) == []
-    assert detect_fin_scan({'fin_scan_ports': {}, 'ip_ports': {'x': set(range(50))}}) == []
+    assert detect_syn_scan({'ip_ports': {}, 'fin_scan_ports': {'x': _scan(set(range(50)))}}) == []
+    assert detect_fin_scan({'fin_scan_ports': {}, 'ip_ports': {'x': _scan(set(range(50)))}}) == []
 
 
 # ======================================================================
@@ -192,7 +210,7 @@ def test_null_fires_on_a_single_port():
     # One port, because that is the interesting case here: the whole
     # premise of this detector is that a flagless packet is abnormal
     # enough that a single one is worth reporting.
-    ctx['null_scan_ports']['10.0.0.5'] = {80}
+    ctx['null_scan_ports']['10.0.0.5'] = _scan({80})
 
     # ---- ACT ---------------------------------------------------------
     # Call the thing under test. Exactly one call, with no assertions
@@ -240,7 +258,7 @@ def test_xmas_fires_on_a_single_port():
     the decision made on top of the collected ports.
     """
     ctx = make_context()
-    ctx['xmas_scan_ports']['10.0.0.5'] = {80}
+    ctx['xmas_scan_ports']['10.0.0.5'] = _scan({80})
 
     findings = detect_xmas_scan(ctx)
 
@@ -261,9 +279,9 @@ def test_xmas_reports_every_scanner_not_just_the_first():
     """
     ctx = make_context()
     ctx['xmas_scan_ports'] = {
-        '10.0.0.1': {80},
-        '10.0.0.2': {81},
-        '10.0.0.3': {82},
+        '10.0.0.1': _scan({80}),
+        '10.0.0.2': _scan({81}),
+        '10.0.0.3': _scan({82}),
     }
 
     findings = detect_xmas_scan(ctx)
@@ -320,8 +338,8 @@ def test_findings_share_one_schema():
     # Same reasoning as above: start from a complete empty context, then
     # fill only the two buckets this test cares about.
     ctx = make_context()
-    ctx['ip_ports']['10.0.0.1'] = set(range(50))
-    ctx['fin_scan_ports']['10.0.0.2'] = set(range(50))
+    ctx['ip_ports']['10.0.0.1'] = _scan(set(range(50)))
+    ctx['fin_scan_ports']['10.0.0.2'] = _scan(set(range(50)))
 
     findings = []
     for detect in DETECTORS:
@@ -331,3 +349,64 @@ def test_findings_share_one_schema():
     for finding in findings:
         assert {'type', 'severity', 'source', 'description'} <= set(finding)
         assert isinstance(finding['description'], str)
+
+
+# ======================================================================
+# Time and order
+#
+# 'ports' answers WHICH ports. These fields answer WHEN and IN WHAT ORDER -
+# the part a sorted list throws away.
+# ======================================================================
+
+def test_scan_finding_keeps_the_order_ports_were_hit():
+    order = [443, 22, 80, *range(1000, 1030)]
+    ctx = {'ip_ports': {'10.0.0.1': _scan(order)}}
+
+    finding = detect_syn_scan(ctx)[0]
+
+    assert [step['port'] for step in finding['timeline']] == order
+    assert finding['ports'] == sorted(order)      # the sorted view is still there
+    assert finding['sequential'] is False
+
+
+def test_scan_finding_flags_an_ascending_walk_as_sequential():
+    ctx = {'ip_ports': {'10.0.0.1': _scan(range(1, 51))}}
+
+    assert detect_syn_scan(ctx)[0]['sequential'] is True
+
+
+def test_scan_finding_carries_start_end_frames_and_rate():
+    # 50 ports, 0.01 s apart -> 0.49 s from first to last probe
+    ctx = {'ip_ports': {'10.0.0.1': _scan(range(50), start=1000.0, step=0.01)}}
+
+    finding = detect_syn_scan(ctx)[0]
+
+    assert finding['start'] == 1000.0
+    assert finding['end'] == pytest.approx(1000.49)
+    assert finding['first_frame'] == 1
+    assert finding['last_frame'] == 50
+    assert finding['rate'] == pytest.approx(50 / 0.49)
+
+
+def test_scan_rate_is_none_when_all_probes_share_one_timestamp():
+    """Guards the division: duration 0 must not raise ZeroDivisionError."""
+    ctx = {'ip_ports': {'10.0.0.1': _scan(range(50), step=0.0)}}
+
+    assert detect_syn_scan(ctx)[0]['rate'] is None
+
+
+def test_mitm_starts_at_the_second_mac_not_the_first():
+    """The first MAC to claim an IP is normally its real owner."""
+    ctx = make_context()
+    ctx['arp_table']['10.0.0.1'] = {
+        'aa:aa:aa:aa:aa:aa': (100.0, 5),     # legitimate owner
+        'bb:bb:bb:bb:bb:bb': (250.0, 77),    # attacker shows up later
+    }
+
+    finding = detect_mitm_attack(ctx)[0]
+
+    assert finding['start'] == 250.0
+    assert finding['first_frame'] == 77
+    assert [step['mac'] for step in finding['timeline']] == [
+        'aa:aa:aa:aa:aa:aa', 'bb:bb:bb:bb:bb:bb',
+    ]

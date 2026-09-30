@@ -158,3 +158,52 @@ def test_human_report_writes_to_stdout(capsys):
 
     assert "OVERVIEW" in captured.out
     assert captured.err == ""
+
+
+# ======================================================================
+# --full
+# ======================================================================
+
+def _scan_finding(ports):
+    return {
+        'type': 'PORT_SCAN', 'severity': 'HIGH', 'source': '10.0.0.1',
+        'description': 'test', 'ports': sorted(ports),
+        'start': 0.0, 'end': 1.0, 'first_frame': 1, 'last_frame': len(ports),
+        'duration': 1.0, 'rate': float(len(ports)), 'sequential': False,
+        'timeline': [{'port': p, 'time': i / 100, 'frame': i + 1}
+                     for i, p in enumerate(ports)],
+    }
+
+
+def test_default_report_truncates_the_order(capsys):
+    ports = list(range(100, 0, -2))            # 50 ports, descending
+
+    report.print_findings([_scan_finding(ports)])
+    out = capsys.readouterr().out
+
+    assert f'(+{50 - report.MAX_ORDER_SHOWN})' in out
+    assert 'timeline' not in out
+
+
+def test_full_report_prints_every_step(capsys):
+    ports = list(range(100, 0, -2))
+
+    report.print_findings([_scan_finding(ports)], full=True)
+    out = capsys.readouterr().out
+
+    assert 'timeline' in out
+    assert out.count('→ ') == len(ports)       # one line per port
+    assert 'more)' not in out
+
+
+def test_full_report_lifts_address_limit(capsys):
+    ctx = make_context()
+    ctx['stats']['total_packets'] = 1
+    for i in range(report.MAX_ADDRESSES_SHOWN + 10):
+        ctx['stats']['unique_ips'].add(f'10.0.0.{i}')
+
+    report.print_stats(ctx, full=True)
+    out = capsys.readouterr().out
+
+    assert '10.0.0.33' in out
+    assert 'more)' not in out

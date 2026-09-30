@@ -40,8 +40,22 @@ def make_context():
 
     Shape:
         ctx['stats']           -- traffic counters, shown to the user
-        ctx['ip_ports']        -- src_ip -> set(ports), raw material for the SYN detector
-        ctx['fin_scan_ports']  -- src_ip -> set(ports), raw material for the FIN detector
+        ctx['ip_ports']        -- src_ip -> scan record, raw material for the SYN detector
+        ctx['fin_scan_ports']  -- src_ip -> scan record, raw material for the FIN detector
+        ... and the same shape for UDP, NULL and XMAS.
+
+    A scan record (built by _record_probe) is:
+
+        {
+            'first_ts': 1727780401.123,   'first_frame': 142,
+            'last_ts':  1727780402.456,   'last_frame':  9001,
+            'ports': {22: (ts, frame), 443: (ts, frame), ...},
+        }
+
+    'ports' is a dict, not a set, for two reasons. A dict keeps insertion
+    order, so iterating it gives the ports in the order the scanner first
+    touched them. And each port carries WHEN and in WHICH frame that
+    happened. len() still counts unique ports, exactly as the set did.
     """
 
     # ------------------------------------------------------------------
@@ -69,7 +83,12 @@ def make_context():
         'unique_ips': set(),
         'unique_ipv6': set(),
         'unique_ports': set(),
-        'packet_sizes': []
+        'packet_sizes': [],
+        # Capture time span, epoch seconds. None until the first packet -
+        # an empty capture has no start, and 0 would claim it started
+        # in 1970.
+        'first_ts': None,
+        'last_ts': None,
     }
 
     # ------------------------------------------------------------------
@@ -88,7 +107,7 @@ def make_context():
     udp_scan_ports = {}
     null_scan_ports = {}
     xmas_scan_ports = {}
-    arp_table = {}
+    arp_table = {}      # ip -> {mac: (ts, frame)}, first time each MAC claimed it
     dns_domains = {}
     return {
         'stats': stats,
@@ -100,6 +119,31 @@ def make_context():
         'arp_table': arp_table,
         'dns_domains': dns_domains,
     }
+
+
+def _record_probe(ctx, key, ip, port, ts, frame):
+    """Write down that 'ip' touched 'port' at time 'ts' in frame 'frame'.
+
+    One helper for all five scan buckets - they differ only in which
+    packets qualify, not in what gets remembered about them.
+    """
+    scan = ctx[key].setdefault(ip, {
+        'first_ts': ts, 'last_ts': ts,
+        'first_frame': frame, 'last_frame': frame,
+        'ports': {},
+    })
+
+    # min/max rather than plain assignment: packets in a capture are
+    # USUALLY in time order, but merged captures and multi-interface
+    # captures can go slightly backwards.
+    if ts < scan['first_ts']:
+        scan['first_ts'], scan['first_frame'] = ts, frame
+    if ts >= scan['last_ts']:
+        scan['last_ts'], scan['last_frame'] = ts, frame
+
+    # setdefault, not assignment: a retransmitted SYN to port 22 must not
+    # move 22 to the end of the order or overwrite when it was first hit.
+    scan['ports'].setdefault(port, (ts, frame))
 
 
 def feed(ctx, packet, index):
@@ -115,10 +159,16 @@ def feed(ctx, packet, index):
         packet -- the scapy packet object
         index  -- position of this packet in the file, starting at 0.
 
-    The 'index' argument is not used yet. It is here because detectors
-    will eventually want to report WHICH packets triggered them, so an
-    analyst can type "frame.number == 142" into Wireshark. See ROADMAP.md.
+    'index' becomes the frame number (index + 1, because Wireshark counts
+    from 1), so a finding can point at the exact packet: an analyst types
+    "frame.number == 142" into Wireshark and lands on it.
     """
+
+    # scapy hands the capture time over as EDecimal. float() because
+    # json.dumps() cannot serialise EDecimal, and the precision lost is
+    # far below the microseconds a pcap stores.
+    ts = float(packet.time)
+    frame = index + 1
 
     # ==================================================================
     # PART A - traffic statistics (this was the loop inside stat())
@@ -126,6 +176,11 @@ def feed(ctx, packet, index):
 
     ctx['stats']['total_packets'] += 1
     ctx['stats']['packet_sizes'].append(len(packet))  # Adding packet size
+
+    if ctx['stats']['first_ts'] is None or ts < ctx['stats']['first_ts']:
+        ctx['stats']['first_ts'] = ts
+    if ctx['stats']['last_ts'] is None or ts > ctx['stats']['last_ts']:
+        ctx['stats']['last_ts'] = ts
 
     # ------------------------------------------------------------------
     # L3 - network layer. Exactly one of these four branches runs per
@@ -196,11 +251,7 @@ def feed(ctx, packet, index):
         src_ip = packet[IP].src          # Source IP address
         dst_port = packet[TCP].dport     # Destination port (not IP!)
 
-        # Add port to the set belonging to this source IP.
-        # setdefault creates an empty set if key doesn't exist yet, and
-        # returns a REFERENCE to it, so .add() modifies the stored set
-        # directly - there is no need to write it back into the dict.
-        ctx['ip_ports'].setdefault(src_ip, set()).add(dst_port)
+        _record_probe(ctx, 'ip_ports', src_ip, dst_port, ts, frame)
 
 
 
@@ -208,10 +259,9 @@ def feed(ctx, packet, index):
         src_ip = packet[IP].src
         dst_port = packet[TCP].dport
 
-        # Same setdefault-and-add pattern as the SYN branch above,
-        # but into a separate dict — bare FIN needs its own bucket
-        # since it means something different from a SYN.
-        ctx['fin_scan_ports'].setdefault(src_ip, set()).add(dst_port)
+        # Same helper as the SYN branch above, but into a separate
+        # bucket — bare FIN means something different from a SYN.
+        _record_probe(ctx, 'fin_scan_ports', src_ip, dst_port, ts, frame)
 
 
 
@@ -241,14 +291,17 @@ def feed(ctx, packet, index):
         scanner_ip = packet[IP].dst
         dst_port = packet[UDPerror].dport
 
-        ctx['udp_scan_ports'].setdefault(scanner_ip, set()).add(dst_port)
+        # NOTE: the time and frame are those of the ICMP REPLY, not of the
+        # probe itself - the probe is indistinguishable from normal UDP.
+        # On a LAN the two are a fraction of a millisecond apart.
+        _record_probe(ctx, 'udp_scan_ports', scanner_ip, dst_port, ts, frame)
 
 
     if IP in packet and TCP in packet and packet[TCP].flags == 0:
          src_ip = packet[IP].src
          dst_port = packet[TCP].dport
 
-         ctx['null_scan_ports'].setdefault(src_ip, set()).add(dst_port)
+         _record_probe(ctx, 'null_scan_ports', src_ip, dst_port, ts, frame)
 
 
 
@@ -257,7 +310,7 @@ def feed(ctx, packet, index):
          src_ip = packet[IP].src
          dst_port = packet[TCP].dport
 
-         ctx['xmas_scan_ports'].setdefault(src_ip, set()).add(dst_port)
+         _record_probe(ctx, 'xmas_scan_ports', src_ip, dst_port, ts, frame)
 
 
 
@@ -265,7 +318,9 @@ def feed(ctx, packet, index):
         claimed_ip   = packet[ARP].psrc
         claimed_mac = packet[ARP].hwsrc
 
-        ctx['arp_table'].setdefault(claimed_ip, set()).add(claimed_mac)
+        # Same first-sighting rule as _record_probe: the moment a SECOND
+        # MAC first claims an IP is the moment the spoofing started.
+        ctx['arp_table'].setdefault(claimed_ip, {}).setdefault(claimed_mac, (ts, frame))
 
 
 
@@ -323,7 +378,12 @@ def feed(ctx, packet, index):
                 'txt': 0,
                 'names': set(),
                 'sources': set(),
+                'first_ts': ts, 'first_frame': frame,
+                'last_ts': ts, 'last_frame': frame,
             })
+
+            if ts >= bucket['last_ts']:
+                bucket['last_ts'], bucket['last_frame'] = ts, frame
 
             bucket['queries'] += 1
 

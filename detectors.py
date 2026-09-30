@@ -53,6 +53,50 @@ DNS_TUNNEL_NAMES_THRESHOLD = 50
 
 
 
+def _scan_finding(ip, scan, finding_type, severity, description):
+    """Build one scan finding from a scan record (see context.make_context).
+
+    All five scan detectors report the same facts - who, which ports, when,
+    how fast, in what order - and differ only in type, severity and wording.
+    Keeping the shape in one place is what lets report.py print any of them
+    without knowing which detector it came from.
+    """
+    ports = scan['ports']
+    duration = scan['last_ts'] - scan['first_ts']
+
+    # dict order = order the scanner first touched each port.
+    order = list(ports)
+
+    return {
+        'type': finding_type,
+        'severity': severity,
+        'source': ip,
+        'description': description,
+
+        # Sorted, because report.py folds consecutive ports into ranges.
+        'ports': sorted(ports),
+
+        'start': scan['first_ts'],
+        'end': scan['last_ts'],
+        'first_frame': scan['first_frame'],
+        'last_frame': scan['last_frame'],
+        'duration': duration,
+        # None rather than a division by zero when every probe landed in
+        # the same timestamp - "infinitely fast" is not a useful number.
+        'rate': len(ports) / duration if duration else None,
+
+        # A conclusion, so it lives here and not in context.py. nmap
+        # shuffles ports by default; a strictly ascending walk points at
+        # "nmap -r", a hand-written script, or a naive tool.
+        'sequential': order == sorted(order),
+
+        # The full story, one entry per port, in the order it happened.
+        # report.py shows it only under --full; JSON always carries it.
+        'timeline': [{'port': port, 'time': ts, 'frame': frame}
+                     for port, (ts, frame) in ports.items()],
+    }
+
+
 def detect_syn_scan(ctx, threshold=SYN_SCAN_THRESHOLD):
     """Detect SYN port scanning.
 
@@ -60,46 +104,21 @@ def detect_syn_scan(ctx, threshold=SYN_SCAN_THRESHOLD):
     certainly enumerating which services are open, rather than doing normal
     work - a normal client connects to one or two ports on a server.
 
-    This is the second loop ("PASS 2") from the old threat_checking(). The
-    data collection half of that function now lives in context.py; what is
-    left here is only the decision-making.
-
     The threshold is a function argument with a default rather than a hard
     constant, so a test can call detect_syn_scan(ctx, threshold=5) with a
     small fixture, and so a --threshold CLI flag can be wired in later
     without touching this code.
     """
-
-    # List to store detected threats (returned at the end)
     found_threats = []
 
-    # ctx['ip_ports'] was filled in by feed(). Shape: src_ip -> set(ports)
-    for ip, ports in ctx['ip_ports'].items():
-        if len(ports) > threshold:
-
-            # NOTE: the two print() calls that used to be here are gone.
-            # The detector now only records what it found; report.py decides
-            # how (and whether) to display it.
-            found_threats.append({
-                'type': 'PORT_SCAN',
-                'severity': 'HIGH',
-                'source': ip,
-                'description': f'{ip} scanned {len(ports)} unique ports',
-
-                # 'ports' is the one field that did not exist before. It has
-                # to be here now: the old code printed sorted(ports) directly
-                # from inside this loop, and since printing has moved to
-                # report.py, the port list has to travel with the finding.
-                'ports': sorted(ports),
-            })
-
-    # NOTE: the old "if not found_threats: print(...)" check is also gone.
-    # That message is about the whole report, not about this one detector,
-    # so it belongs in report.print_findings().
+    # ctx['ip_ports'] was filled in by feed(). Shape: src_ip -> scan record
+    for ip, scan in ctx['ip_ports'].items():
+        if len(scan['ports']) > threshold:
+            found_threats.append(_scan_finding(
+                ip, scan, 'PORT_SCAN', 'HIGH',
+                f'{ip} scanned {len(scan["ports"])} unique ports'))
 
     return found_threats
-
- 
 
 
 def detect_fin_scan(ctx, threshold=FIN_SCAN_THRESHOLD):
@@ -111,108 +130,81 @@ def detect_fin_scan(ctx, threshold=FIN_SCAN_THRESHOLD):
     sending bare FIN to many different ports is enumerating open/closed
     state the same way a SYN scanner does, just via non-response instead
     of SYN-ACK.
-
-    Mirrors detect_syn_scan exactly - same shape, different source dict
-    and different finding 'type'.
     """
     found_threats = []
 
-    # ctx['fin_scan_ports'] was filled in by feed(). Shape:
-    # src_ip -> set(ports), populated only for packets with flags == 'F'.
-    for ip, ports in ctx['fin_scan_ports'].items():
-        if len(ports) > threshold:
-            found_threats.append({
-                'type': 'FIN_SCAN',
-                'severity': 'HIGH',
-                'source': ip,
-                'description': f'{ip} sent bare FIN to {len(ports)} unique ports',
-                'ports': sorted(ports),
-            })
+    for ip, scan in ctx['fin_scan_ports'].items():
+        if len(scan['ports']) > threshold:
+            found_threats.append(_scan_finding(
+                ip, scan, 'FIN_SCAN', 'HIGH',
+                f'{ip} sent bare FIN to {len(scan["ports"])} unique ports'))
 
     return found_threats
-        
+
 
 def detect_udp_scan(ctx, threshold=UDP_SCAN_THRESHOLD):
-
     found_threats = []
 
-    for ip, ports in ctx['udp_scan_ports'].items():
-        if len(ports) > threshold:
-            found_threats.append({
-                'type' : 'UDP_SCAN',
-                'severity': 'HIGH',
-                'source': ip,
-                'description' : f'{ip} sent UDP to {len(ports)} unique ports ',
-                'ports': sorted(ports),
+    for ip, scan in ctx['udp_scan_ports'].items():
+        if len(scan['ports']) > threshold:
+            found_threats.append(_scan_finding(
+                ip, scan, 'UDP_SCAN', 'HIGH',
+                f'{ip} sent UDP to {len(scan["ports"])} unique ports'))
 
-
-                
-            })
-    
     return found_threats
-
-
 
 
 def detect_null_scan(ctx, threshold=NULL_SCAN_THRESHOLD):
     found_threats = []
 
-    for ip, ports in ctx['null_scan_ports'].items():
-        if len(ports) > threshold:
-            found_threats.append({
-                'type' : 'NULL_SCAN',
-                'severity': 'MEDIUM',
-                'source': ip,
-                'description' : f'{ip} sent NULL PACKET to {len(ports)} unique ports ',
-                'ports': sorted(ports),
+    for ip, scan in ctx['null_scan_ports'].items():
+        if len(scan['ports']) > threshold:
+            found_threats.append(_scan_finding(
+                ip, scan, 'NULL_SCAN', 'MEDIUM',
+                f'{ip} sent NULL PACKET to {len(scan["ports"])} unique ports'))
 
-
-            })        
-
-    return found_threats 
-
+    return found_threats
 
 
 def detect_xmas_scan(ctx, threshold=XMAS_SCAN_THRESHOLD):
     found_threats = []
 
-
-    for ip, ports in ctx['xmas_scan_ports'].items():
-        if len(ports) > threshold:
-            found_threats.append({
-            'type' : 'XMAS_SCAN',
-            'severity': 'MEDIUM',
-            'source': ip,
-            'description' : f'{ip} sent FIN ,PUSH, URG PACKETS to {len(ports)} unique ports ',
-            'ports': sorted(ports),
-            
-                
-            })
+    for ip, scan in ctx['xmas_scan_ports'].items():
+        if len(scan['ports']) > threshold:
+            found_threats.append(_scan_finding(
+                ip, scan, 'XMAS_SCAN', 'MEDIUM',
+                f'{ip} sent FIN, PUSH, URG PACKETS to {len(scan["ports"])} unique ports'))
 
     return found_threats
 
-    
-def detect_mitm_attack(ctx , threshold=MITM_ATTACK_THRESHOLD):
+
+def detect_mitm_attack(ctx, threshold=MITM_ATTACK_THRESHOLD):
 
     found_threats = []
 
-    for ip , macs in ctx['arp_table'].items():
+    # ctx['arp_table']: ip -> {mac: (ts, frame)}, in order of first claim
+    for ip, macs in ctx['arp_table'].items():
 
         if len(macs) > threshold:
             mac_list = ', '.join(sorted(macs))
+
+            # The attack starts when the SECOND MAC shows up, not the
+            # first - the first one is usually the legitimate owner.
+            claims = sorted(macs.items(), key=lambda item: item[1][0])
+            takeover_ts, takeover_frame = claims[1][1]
+
             found_threats.append({
-            'type' : 'MITM_ATTACK',
-            'severity': 'HIGH',
-            'source' : ip,
-            'description': f'{ip} claimed by {len(macs)} MACs: {mac_list}',
-            
-
-
-                
+                'type': 'MITM_ATTACK',
+                'severity': 'HIGH',
+                'source': ip,
+                'description': f'{ip} claimed by {len(macs)} MACs: {mac_list}',
+                'start': takeover_ts,
+                'first_frame': takeover_frame,
+                'timeline': [{'mac': mac, 'time': ts, 'frame': frame}
+                             for mac, (ts, frame) in claims],
             })
-        
 
-    return found_threats 
+    return found_threats
 
 
 def detect_dns_tunnel(ctx,
@@ -244,6 +236,11 @@ def detect_dns_tunnel(ctx,
                 'description': (f'{domain}: {len(data["names"])} unique names, '
                                 f'longest label {data["max_label"]} chars, '
                                 f'{data["txt"]} TXT queries'),
+                'start': data['first_ts'],
+                'end': data['last_ts'],
+                'first_frame': data['first_frame'],
+                'last_frame': data['last_frame'],
+                'duration': data['last_ts'] - data['first_ts'],
             })
 
     return found_threats
