@@ -15,12 +15,14 @@ import ipaddress
 from context import make_context
 from detectors import (
     DETECTORS,
+    MODBUS_FC_SWEEP_THRESHOLD,
     FIN_SCAN_THRESHOLD,
     NULL_SCAN_THRESHOLD,
     SYN_SCAN_THRESHOLD,
     XMAS_SCAN_THRESHOLD,
     detect_fin_scan,
     detect_mitm_attack,
+    detect_modbus_fc_sweep,
     detect_modbus_unauthorized_master,
     detect_null_scan,
     detect_syn_scan,
@@ -522,3 +524,66 @@ def test_unauthorized_master_timeline_is_function_codes_in_first_use_order():
 
     assert [step['fc'] for step in finding['timeline']] == [8, 43, 17]
     assert finding['first_frame'] == 1
+
+
+# ======================================================================
+# Modbus: function-code sweep
+# ======================================================================
+
+@pytest.mark.parametrize("count, expected", [
+    (MODBUS_FC_SWEEP_THRESHOLD, 0),       # '>' not '>='
+    (MODBUS_FC_SWEEP_THRESHOLD + 1, 1),
+])
+def test_fc_sweep_threshold_boundary(count, expected):
+    ctx = make_context()
+    ctx['modbus']['masters']['10.0.0.5'] = _master(fcs=range(count))
+
+    assert len(detect_modbus_fc_sweep(ctx)) == expected
+
+
+def test_fc_sweep_silent_on_a_normal_scada_master():
+    """3 codes, hundreds of requests - the shape of 10.1.1.234."""
+    ctx = make_context()
+    ctx['modbus']['masters']['10.0.0.5'] = _master(requests=407, fcs=(6, 4, 3))
+
+    assert detect_modbus_fc_sweep(ctx) == []
+
+
+def test_fc_sweep_needs_no_allowlist_and_ignores_it():
+    """Fires with no --allow-master, and still fires for an ALLOWED master.
+
+    That second half is the reason this detector exists next to the
+    allowlist one: a compromised SCADA server is on the allowlist.
+    """
+    ctx = make_context()
+    ctx['modbus']['masters']['10.0.0.5'] = _master(fcs=range(50))
+    assert len(detect_modbus_fc_sweep(ctx)) == 1
+
+    ctx['config']['modbus_masters'] = _allow('10.0.0.5')
+    assert len(detect_modbus_fc_sweep(ctx)) == 1
+
+
+def test_fc_sweep_names_the_write_codes_it_tried():
+    ctx = make_context()
+    ctx['modbus']['masters']['10.0.0.5'] = _master(fcs=range(20))     # 0..19
+    ctx['modbus']['masters']['10.0.0.6'] = _master(fcs=range(30, 50))  # no writes
+
+    by_source = {f['source']: f for f in detect_modbus_fc_sweep(ctx)}
+
+    assert by_source['10.0.0.5']['write_codes'] == [5, 6, 15, 16]
+    assert 'including write codes 5, 6, 15, 16' in by_source['10.0.0.5']['description']
+    assert by_source['10.0.0.6']['write_codes'] == []
+    assert 'write' not in by_source['10.0.0.6']['description']
+
+
+def test_fc_sweep_order_and_sequential_flag():
+    ctx = make_context()
+    ctx['modbus']['masters']['10.0.0.5'] = _master(fcs=range(20))
+    ctx['modbus']['masters']['10.0.0.6'] = _master(fcs=[7, 3, 19, 1, 0, 12, 5, 2, 9, 11, 4, 8])
+
+    by_source = {f['source']: f for f in detect_modbus_fc_sweep(ctx)}
+
+    assert by_source['10.0.0.5']['sequential'] is True
+    assert by_source['10.0.0.6']['sequential'] is False
+    assert [step['fc'] for step in by_source['10.0.0.6']['timeline']][:3] == [7, 3, 19]
+    assert by_source['10.0.0.6']['function_codes'] == sorted(by_source['10.0.0.6']['function_codes'])

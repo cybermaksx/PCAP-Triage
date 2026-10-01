@@ -322,3 +322,15 @@ def test_unauthorized_masters_on_modbus_test(modbus_ctx):
     findings = detect_modbus_unauthorized_master(ctx)
 
     assert sorted(f['source'] for f in findings) == ['10.0.0.57', '10.0.0.9', '192.168.66.235']
+
+
+def test_fc_sweep_on_modbus_test(modbus_ctx):
+    """End to end: exactly the 2006 sweep, nobody else, no flags needed."""
+    from detectors import detect_modbus_fc_sweep
+
+    findings = detect_modbus_fc_sweep(modbus_ctx)
+
+    assert [f['source'] for f in findings] == ['192.168.66.235']
+    assert findings[0]['function_codes'] == list(range(128))
+    assert findings[0]['sequential'] is True
+    assert findings[0]['first_frame'] == 124

@@ -9,8 +9,9 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 > keeps memory flat on large captures, a machine-readable JSON mode and a pytest suite.
 >
 > **Phase 2 has started:** Modbus/TCP is parsed and summarised — masters, slaves,
-> function codes, writes, exceptions and malformed traffic on port 502 — and any master
-> not on an allowlist given with `--allow-master` is reported. See [Roadmap](#roadmap)
+> function codes, writes, exceptions and malformed traffic on port 502. Two detectors sit
+> on top: a function-code sweep, and any master not on an allowlist given with
+> `--allow-master`. See [Roadmap](#roadmap)
 > for the honest state of things.
 
 ## Features
@@ -43,6 +44,10 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   counted instead of silently mislabelled. The report gets a `MODBUS` block: every
   master with its request count, number of distinct function codes, writes and target
   devices; function codes by name; exceptions per device; malformed frames by number
+- Modbus function-code sweep detection — a master trying more than 10 different function
+  codes is mapping what a device accepts, the Modbus counterpart of a port scan. Needs
+  no configuration, so it also fires for a sweep from an allowed address. Write codes
+  inside the sweep are named in the finding: on a live PLC a "probe" write is a write
 - Unauthorized Modbus master detection — the analyst lists the machines allowed to
   give orders (`--allow-master`, IPs or CIDR networks); any other IP sending requests
   to port 502 is reported, with its targets, its writes and the function codes it used
@@ -63,7 +68,7 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   with a non-zero exit code, so a wrapping script can tell a failed run from an
   empty one
 - CLI interface via `argparse`
-- pytest suite — 230 tests over the collector, the Modbus parser, the detectors, the
+- pytest suite — 238 tests over the collector, the Modbus parser, the detectors, the
   registry contract, the command line and all output modes. Modbus expectations are taken from tshark,
   not from the code under test
 
@@ -79,9 +84,15 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   segment, or one message split across two, are counted as malformed — there is no TCP
   stream reassembly
 - Modbus over UDP and Modbus RTU-over-TCP are not recognised
-- A function-code sweep is plainly visible in the Modbus block (128 codes from one
-  master), but no detector raises a finding for it yet unless the sweeping host is
-  also missing from the allowlist
+- The function-code sweep is judged over the whole capture: a master that used 11
+  codes over a month and one that used 128 in 82 seconds both cross the threshold.
+  There is no time window yet
+- The sweep detector counts requests only. Whether the device accepted a code is in
+  the responses, but Modbus/TCP devices often leave the transaction id at 0 (all 141
+  sweep requests in `modbus_test.pcap` do), so pairing a response with its request
+  needs per-connection ordering that is not implemented
+- A sweep over unit ids (one function code, units 0..247 — finding devices behind a
+  gateway) is a different pattern and is not detected
 - Masters are only checked against an allowlist the analyst supplies. The tool does
   not learn one from the capture, and an attacker on an allowed address — a
   compromised SCADA server — is not reported by this check
@@ -293,7 +304,20 @@ MODBUS
 
 The number in brackets is the unit id. A master using 128 distinct function codes
 while the others use three or four, answered mostly with *Illegal Function*, is a
-device being fingerprinted. `--full` adds every write with its frame number and time.
+device being fingerprinted — and the sweep detector reports it with no flags at all:
+
+```
+    ▸ MODBUS_FC_SWEEP  HIGH  from 192.168.66.235
+      192.168.66.235 tried 128 different Modbus function codes against 166.161.16.230, including write codes 5, 6, 15, 16, 22, 23
+      codes  0-127
+      start  2006-07-21 14:24:52.212 UTC  (frame 124)
+      end    2006-07-21 14:26:14.091 UTC  (frame 468)
+      span   81.878 s
+      order  FC 0 → FC 1 → FC 2 → FC 3 → FC 4 → FC 5 … (+122)  [sequential]
+```
+
+`[sequential]` means the codes were walked in ascending order — a script stepping
+through the range. `--full` adds every write with its frame number and time.
 
 A message counts as Modbus only if its MBAP header is self-consistent: protocol id 0,
 a length field between 2 and 254 that matches the bytes actually present. Anything
@@ -453,8 +477,8 @@ lets the same command feed a pipe instead.
 ### Running the tests
 
 ```bash
-python -m pytest -m "not slow"    # 225 tests, ~1 s
-python -m pytest                  # 230 tests, ~45 s
+python -m pytest -m "not slow"    # 233 tests, ~1 s
+python -m pytest                  # 238 tests, ~45 s
 ```
 
 The `-m` matters: a bare `pytest` does not put the project directory on the module
@@ -495,7 +519,7 @@ Phase 2 — OT/ICS protocols, the actual goal of this project:
 | Feature | Status |
 |---|---|
 | Modbus/TCP detection + MBAP header parsing | Done |
-| Modbus function-code sweep detection | Next up |
+| Modbus function-code sweep detection | Done |
 | Modbus write-command detection (FC 5/6/15/16/22/23) | Next up |
 | Unauthorized Modbus master detection (`--allow-master`) | Done |
 | Modbus unit-id sweep detection (device discovery behind a gateway) | Planned |

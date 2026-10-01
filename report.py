@@ -571,6 +571,13 @@ def print_findings(findings, full=False):
             groups = None if full else MAX_PORT_GROUPS
             print(_field('ports', _format_ports(ports, groups)))
 
+        # Function codes fold into ranges exactly like ports: a sweep of
+        # every code reads '0-127', not 128 numbers.
+        codes = threat.get('function_codes')
+        if codes:
+            groups = None if full else MAX_PORT_GROUPS
+            print(_field('codes', _format_ports(codes, groups)))
+
         # "(frame N)" is what makes a finding checkable: Wireshark filter
         # frame.number == N jumps straight to the packet.
         if threat.get('start') is not None:

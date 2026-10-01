@@ -270,3 +270,19 @@ def test_modbus_json_allowlist_is_null_when_not_given(capsys):
     report.print_json(make_context(), [], 'x.pcap')
 
     assert json.loads(capsys.readouterr().out)['modbus']['allowed_masters'] is None
+
+
+def test_fc_sweep_codes_fold_into_a_range(capsys):
+    finding = {
+        'type': 'MODBUS_FC_SWEEP', 'severity': 'HIGH', 'source': '10.0.0.5',
+        'description': 'test', 'function_codes': list(range(128)),
+        'timeline': [{'fc': fc, 'time': fc / 10, 'frame': fc + 1} for fc in range(128)],
+        'sequential': True,
+    }
+
+    report.print_findings([finding])
+    out = capsys.readouterr().out
+
+    assert 'codes  0-127' in out
+    assert 'FC 0 → FC 1' in out
+    assert '[sequential]' in out

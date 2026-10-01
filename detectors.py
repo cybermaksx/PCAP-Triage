@@ -35,6 +35,8 @@ main.py does not change. report.py does not change.
 
 import ipaddress
 
+from modbus import WRITE_FCS
+
 
 # ======================================================================
 # THRESHOLDS
@@ -53,6 +55,12 @@ XMAS_SCAN_THRESHOLD = 0 #Same logic ,packet should not be this way
 MITM_ATTACK_THRESHOLD = 1
 DNS_TUNNEL_LABEL_THRESHOLD = 30
 DNS_TUNNEL_NAMES_THRESHOLD = 50
+
+# Distinct Modbus function codes one master may use before it counts as a
+# sweep. A SCADA poller uses 2-4 (10.1.1.234 in modbus_test.pcap: 3), a full
+# HMI up to about 8 (1, 2, 3, 4, 5, 6, 15, 16), an engineering workstation a
+# few more on top (8, 17, 43, a vendor code). A sweep uses dozens to all 128.
+MODBUS_FC_SWEEP_THRESHOLD = 10
 
 
 
@@ -313,6 +321,76 @@ def detect_modbus_unauthorized_master(ctx):
     return found_threats
 
 
+def detect_modbus_fc_sweep(ctx, threshold=MODBUS_FC_SWEEP_THRESHOLD):
+    """Find masters that try many different function codes.
+
+    The same idea as a port scan, one layer up. A port scan asks "which
+    services does this host run?"; a function-code sweep asks "which
+    commands does this PLC accept?". The answers - Illegal Function for
+    codes that do not exist, Illegal Data Value for ones that do - give
+    the attacker a map of the device before anything is changed on it.
+
+    A real master is configured once for one device and repeats the same
+    few codes forever. Variety is the trace of someone who does not know
+    the device yet.
+
+    Unlike detect_modbus_unauthorized_master this needs no allowlist, so
+    it also catches a sweep from an ALLOWED address - a compromised
+    SCADA server is exactly where an attacker would sweep from.
+
+    Counted per master, over all its target devices together: a legitimate
+    master polling fifty devices still uses the same three codes, so
+    nothing is lost, and a sweep spread across several devices is caught.
+
+    Requests only. The responses would confirm it, but a capture taken on
+    a one-way mirror port has none, and a device that stays silent is no
+    reason to miss the sweep.
+    """
+    found_threats = []
+
+    for ip, master in ctx['modbus']['masters'].items():
+        codes = master['function_codes']      # fc -> (ts, frame), first-use order
+        if len(codes) <= threshold:
+            continue
+
+        targets = ', '.join(sorted(master['slaves']))
+
+        # Write codes inside a sweep are not just probes. On a live PLC a
+        # "test" Write Single Coil switches a real coil - in modbus_test.pcap
+        # frame 139 is exactly that, and the device accepted it.
+        write_codes = sorted(set(codes) & WRITE_FCS)
+
+        description = (f'{ip} tried {len(codes)} different Modbus function codes '
+                       f'against {targets}')
+        if write_codes:
+            description += f', including write codes {", ".join(map(str, write_codes))}'
+
+        order = list(codes)
+
+        found_threats.append({
+            'type': 'MODBUS_FC_SWEEP',
+            'severity': 'HIGH',
+            'source': ip,
+            'description': description,
+            'targets': sorted(master['slaves']),
+            # Sorted, so report.py can fold it into ranges: 0-127.
+            'function_codes': sorted(codes),
+            'write_codes': write_codes,
+            'start': master['first_ts'],
+            'end': master['last_ts'],
+            'first_frame': master['first_frame'],
+            'last_frame': master['last_frame'],
+            'duration': master['last_ts'] - master['first_ts'],
+            # 0, 1, 2 ... 127 in order is a script walking the range; a
+            # shuffled order is a tool trying not to look like one.
+            'sequential': order == sorted(order),
+            'timeline': [{'fc': fc, 'time': ts, 'frame': frame}
+                         for fc, (ts, frame) in codes.items()],
+        })
+
+    return found_threats
+
+
 # ======================================================================
 # THE REGISTRY
 #
@@ -330,4 +408,5 @@ DETECTORS = [
     detect_mitm_attack,
     detect_dns_tunnel,
     detect_modbus_unauthorized_master,
+    detect_modbus_fc_sweep,
 ]
