@@ -33,6 +33,9 @@ main.py does not change. report.py does not change.
 """
 
 
+import ipaddress
+
+
 # ======================================================================
 # THRESHOLDS
 #
@@ -246,6 +249,70 @@ def detect_dns_tunnel(ctx,
     return found_threats
 
 
+def detect_modbus_unauthorized_master(ctx):
+    """Report every IP that sent Modbus requests without being allowed to.
+
+    In an industrial network the set of machines that may give orders to
+    field devices is short and known: the SCADA server, an engineering
+    workstation or two. Anything else talking TO port 502 is an incident,
+    however polite its requests are - reading one register is how an
+    attacker learns the process before changing it.
+
+    The tool cannot know that set; the analyst passes it with
+    --allow-master. Without it this detector stays silent rather than
+    guessing - every master would otherwise look unauthorized.
+
+    No threshold: one request is enough. An unknown master is not
+    "suspicious above N", it is wrong at 1.
+    """
+    allowed = ctx['config']['modbus_masters']
+    if allowed is None:
+        return []
+
+    found_threats = []
+
+    for ip, master in ctx['modbus']['masters'].items():
+        address = ipaddress.ip_address(ip)
+
+        # 'address in network' is False, not an error, when the two are
+        # different IP versions - an IPv6 master against an IPv4 allowlist
+        # simply does not match, and is reported.
+        if any(address in network for network in allowed):
+            continue
+
+        targets = ', '.join(sorted(master['slaves']))
+        writes = len(master['writes'])
+
+        description = (f'{ip} is not an allowed master but sent '
+                       f'{master["requests"]} Modbus requests to {targets}')
+        if writes:
+            # The part that turns "someone is looking" into "someone
+            # changed something" - said in the description, not only
+            # buried in a number.
+            description += f', including {writes} writes'
+
+        found_threats.append({
+            'type': 'MODBUS_UNAUTHORIZED_MASTER',
+            'severity': 'HIGH',
+            'source': ip,
+            'description': description,
+            'targets': sorted(master['slaves']),
+            'requests': master['requests'],
+            'writes': writes,
+            'start': master['first_ts'],
+            'end': master['last_ts'],
+            'first_frame': master['first_frame'],
+            'last_frame': master['last_frame'],
+            'duration': master['last_ts'] - master['first_ts'],
+            # What it did, in the order it first did it - one entry per
+            # function code, like one entry per port in a scan.
+            'timeline': [{'fc': fc, 'time': ts, 'frame': frame}
+                         for fc, (ts, frame) in master['function_codes'].items()],
+        })
+
+    return found_threats
+
+
 # ======================================================================
 # THE REGISTRY
 #
@@ -261,5 +328,6 @@ DETECTORS = [
     detect_null_scan,
     detect_xmas_scan,
     detect_mitm_attack,
-    detect_dns_tunnel
+    detect_dns_tunnel,
+    detect_modbus_unauthorized_master,
 ]

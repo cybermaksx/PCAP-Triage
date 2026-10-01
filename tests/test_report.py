@@ -17,6 +17,7 @@ capsys is a pytest built-in: it captures whatever the test printed and
 hands it back as .out (stdout) and .err (stderr).
 """
 
+import ipaddress
 import json
 
 import pytest
@@ -246,3 +247,26 @@ def test_modbus_json_parses_and_keeps_numbers(capsys, modbus_ctx):
     assert len(masters['192.168.66.235']['function_codes']) == 128
     assert masters['10.1.1.234']['slaves'] == [{'ip': '10.10.5.85', 'units': [255]}]
     assert data['stats']['protocols']['modbus'] == 1139
+
+
+def test_modbus_block_says_whether_masters_were_checked(capsys, modbus_ctx):
+    """An empty FINDINGS block must not read as "all masters are fine"."""
+    report.print_stats(modbus_ctx)
+
+    assert 'not checked against an allowlist' in capsys.readouterr().out
+
+
+def test_modbus_json_records_the_allowlist(capsys):
+    ctx = make_context()
+    ctx['config']['modbus_masters'] = [ipaddress.ip_network('10.0.0.0/24')]
+
+    report.print_json(ctx, [], 'x.pcap')
+    data = json.loads(capsys.readouterr().out)
+
+    assert data['modbus']['allowed_masters'] == ['10.0.0.0/24']
+
+
+def test_modbus_json_allowlist_is_null_when_not_given(capsys):
+    report.print_json(make_context(), [], 'x.pcap')
+
+    assert json.loads(capsys.readouterr().out)['modbus']['allowed_masters'] is None

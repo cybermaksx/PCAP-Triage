@@ -9,8 +9,9 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 > keeps memory flat on large captures, a machine-readable JSON mode and a pytest suite.
 >
 > **Phase 2 has started:** Modbus/TCP is parsed and summarised — masters, slaves,
-> function codes, writes, exceptions and malformed traffic on port 502. Detectors on
-> top of it are next. See [Roadmap](#roadmap) for the honest state of things.
+> function codes, writes, exceptions and malformed traffic on port 502 — and any master
+> not on an allowlist given with `--allow-master` is reported. See [Roadmap](#roadmap)
+> for the honest state of things.
 
 ## Features
 
@@ -42,6 +43,10 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   counted instead of silently mislabelled. The report gets a `MODBUS` block: every
   master with its request count, number of distinct function codes, writes and target
   devices; function codes by name; exceptions per device; malformed frames by number
+- Unauthorized Modbus master detection — the analyst lists the machines allowed to
+  give orders (`--allow-master`, IPs or CIDR networks); any other IP sending requests
+  to port 502 is reported, with its targets, its writes and the function codes it used
+  in order. Without the flag the check is skipped and the report says so
 - Full mode (`--full`) — lifts every truncation limit and prints a per-packet timeline
   for each finding
 - Detector registry — new detections plug in without touching the pipeline
@@ -58,8 +63,8 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   with a non-zero exit code, so a wrapping script can tell a failed run from an
   empty one
 - CLI interface via `argparse`
-- pytest suite — 212 tests over the collector, the Modbus parser, the detectors, the
-  registry contract and all output modes. Modbus expectations are taken from tshark,
+- pytest suite — 230 tests over the collector, the Modbus parser, the detectors, the
+  registry contract, the command line and all output modes. Modbus expectations are taken from tshark,
   not from the code under test
 
 **Known limitations**
@@ -74,8 +79,12 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   segment, or one message split across two, are counted as malformed — there is no TCP
   stream reassembly
 - Modbus over UDP and Modbus RTU-over-TCP are not recognised
-- The Modbus block reports; it does not judge yet. A function-code sweep is plainly
-  visible in it (128 codes from one master), but no detector raises a finding for it
+- A function-code sweep is plainly visible in the Modbus block (128 codes from one
+  master), but no detector raises a finding for it yet unless the sweeping host is
+  also missing from the allowlist
+- Masters are only checked against an allowlist the analyst supplies. The tool does
+  not learn one from the capture, and an attacker on an allowed address — a
+  compromised SCADA server — is not reported by this check
 - Packets themselves are streamed, but `stats['packet_sizes']` still keeps one entry
   per packet, so memory has not been made fully constant in file size. Only min, max
   and the average are read back from that list
@@ -134,7 +143,7 @@ pip install -r requirements-dev.txt
 ## Usage
 
 ```bash
-python main.py <capture.pcap> [--json] [--full]
+python main.py <capture.pcap> [--json] [--full] [--allow-master IP[/NET][,...]]
 ```
 
 Example:
@@ -293,6 +302,35 @@ send garbage on purpose, and a device answering in another protocol is itself a 
 This occasionally disagrees with Wireshark: frames 91–109 above are valid MBAP
 exception responses that Wireshark shows as plain data.
 
+### Allowed Modbus masters
+
+The set of machines that may send commands to field devices is short and known on
+site — the SCADA server, an engineering workstation or two — but it is not written
+anywhere in a capture. Pass it in:
+
+```bash
+python main.py pcaps/modbus_test.pcap --allow-master 10.1.1.234
+python main.py capture.pcap --allow-master 10.1.1.234,10.20.0.0/24   # same as repeating the flag
+```
+
+Every other IP that sent a Modbus request becomes a finding. There is no threshold:
+one request from an unknown master is already wrong.
+
+```
+    ▸ MODBUS_UNAUTHORIZED_MASTER  HIGH  from 10.0.0.9
+      10.0.0.9 is not an allowed master but sent 6 Modbus requests to 10.0.0.3, including 3 writes
+      start  2004-08-26 12:12:18.985 UTC  (frame 51)
+      end    2004-08-26 12:14:39.997 UTC  (frame 66)
+      span   141.012 s
+      order  FC 1 → FC 3 → FC 5 → FC 6
+```
+
+Without `--allow-master` the detector stays silent rather than guess, and the
+`MODBUS` block says that masters were not checked — so an empty `FINDINGS` block is
+never mistaken for "all masters are fine". The JSON records the allowlist that was used
+(`modbus.allowed_masters`, `null` when none was given), so a saved result can be read
+next to the list that produced it.
+
 ### Full output
 
 ```bash
@@ -415,8 +453,8 @@ lets the same command feed a pipe instead.
 ### Running the tests
 
 ```bash
-python -m pytest -m "not slow"    # 207 tests, ~1 s
-python -m pytest                  # 212 tests, ~45 s
+python -m pytest -m "not slow"    # 225 tests, ~1 s
+python -m pytest                  # 230 tests, ~45 s
 ```
 
 The `-m` matters: a bare `pytest` does not put the project directory on the module
@@ -459,7 +497,8 @@ Phase 2 — OT/ICS protocols, the actual goal of this project:
 | Modbus/TCP detection + MBAP header parsing | Done |
 | Modbus function-code sweep detection | Next up |
 | Modbus write-command detection (FC 5/6/15/16/22/23) | Next up |
-| Unauthorized Modbus master detection | Planned |
+| Unauthorized Modbus master detection (`--allow-master`) | Done |
+| Modbus unit-id sweep detection (device discovery behind a gateway) | Planned |
 | DNP3 / S7comm parsing | Planned |
 
 Phase 3 — later, no timeline:
@@ -487,6 +526,7 @@ PCAP-Triage/
 │   ├── test_context.py       # Counter accuracy and the layer-coverage invariant
 │   ├── test_detectors.py     # Thresholds, finding schema, registry contract
 │   ├── test_modbus.py        # MBAP parser on hand-built bytes, no capture needed
+│   ├── test_main.py          # Command-line parsing (--allow-master)
 │   └── test_report.py        # JSON validity and which stream each helper writes to
 ├── pcaps/                    # Sample captures
 │   ├── test.pcapng           # 40 packets, mixed IPv4/IPv6, no scan

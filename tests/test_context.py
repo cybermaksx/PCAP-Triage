@@ -9,6 +9,8 @@ contains.
 
 import pytest
 
+from context import make_context
+
 
 # ======================================================================
 # test.pcapng - 40 packets, mixed IPv4/IPv6, no scan
@@ -296,3 +298,27 @@ def test_bare_acks_are_not_malformed(modbus_ctx):
 def test_no_modbus_in_a_capture_without_it(test_ctx):
     assert test_ctx['stats']['modbus'] == 0
     assert test_ctx['modbus'] == {'masters': {}, 'slaves': {}, 'malformed': []}
+
+
+def test_config_starts_empty_and_feed_leaves_it_alone(modbus_ctx):
+    """'config' is filled by main.py, never by the packets."""
+    assert make_context()['config'] == {'modbus_masters': None}
+    assert modbus_ctx['config'] == {'modbus_masters': None}
+
+
+def test_unauthorized_masters_on_modbus_test(modbus_ctx):
+    """End to end: allow the 2012 SCADA master, expect the other three.
+
+    Built on a copy of the context, because modbus_ctx is shared by the
+    whole session and must stay as feed() left it.
+    """
+    from detectors import detect_modbus_unauthorized_master
+    import ipaddress
+
+    ctx = dict(modbus_ctx, config={
+        'modbus_masters': [ipaddress.ip_network('10.1.1.234/32')],
+    })
+
+    findings = detect_modbus_unauthorized_master(ctx)
+
+    assert sorted(f['source'] for f in findings) == ['10.0.0.57', '10.0.0.9', '192.168.66.235']

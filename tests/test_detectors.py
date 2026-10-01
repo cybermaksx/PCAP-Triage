@@ -10,6 +10,8 @@ touching packets - and rule 2 of the detector contract has been broken.
 
 import pytest
 
+import ipaddress
+
 from context import make_context
 from detectors import (
     DETECTORS,
@@ -19,6 +21,7 @@ from detectors import (
     XMAS_SCAN_THRESHOLD,
     detect_fin_scan,
     detect_mitm_attack,
+    detect_modbus_unauthorized_master,
     detect_null_scan,
     detect_syn_scan,
     detect_xmas_scan,
@@ -410,3 +413,112 @@ def test_mitm_starts_at_the_second_mac_not_the_first():
     assert [step['mac'] for step in finding['timeline']] == [
         'aa:aa:aa:aa:aa:aa', 'bb:bb:bb:bb:bb:bb',
     ]
+
+
+# ======================================================================
+# Modbus: unauthorized master
+# ======================================================================
+
+def _master(requests=5, slaves=None, fcs=(3,), writes=0):
+    """A master record the way feed() builds it."""
+    return {
+        'requests': requests,
+        'first_ts': 1000.0, 'last_ts': 1010.0,
+        'first_frame': 1, 'last_frame': requests,
+        'slaves': slaves or {'10.0.0.100': {1}},
+        'function_codes': {fc: (1000.0 + i, i + 1) for i, fc in enumerate(fcs)},
+        'fc_counts': {fc: 1 for fc in fcs},
+        'writes': [{'slave': '10.0.0.100', 'unit': 1, 'fc': 6,
+                    'time': 1005.0, 'frame': 3}] * writes,
+    }
+
+
+def _allow(*networks):
+    return [ipaddress.ip_network(n, strict=False) for n in networks]
+
+
+def test_unauthorized_master_silent_without_an_allowlist():
+    """None means "not told", and the detector must not guess.
+
+    Without this, every master in every capture would be reported the
+    moment the detector is registered.
+    """
+    ctx = make_context()
+    ctx['modbus']['masters']['10.0.0.5'] = _master()
+
+    assert ctx['config']['modbus_masters'] is None
+    assert detect_modbus_unauthorized_master(ctx) == []
+
+
+def test_unauthorized_master_fires_on_a_single_request():
+    """No threshold - an unknown master is wrong at one request."""
+    ctx = make_context()
+    ctx['config']['modbus_masters'] = _allow('10.0.0.1')
+    ctx['modbus']['masters']['10.0.0.5'] = _master(requests=1)
+
+    findings = detect_modbus_unauthorized_master(ctx)
+
+    assert len(findings) == 1
+    assert findings[0]['source'] == '10.0.0.5'
+    assert findings[0]['type'] == 'MODBUS_UNAUTHORIZED_MASTER'
+    assert findings[0]['severity'] == 'HIGH'
+
+
+def test_allowed_master_is_not_reported():
+    ctx = make_context()
+    ctx['config']['modbus_masters'] = _allow('10.0.0.5')
+    ctx['modbus']['masters']['10.0.0.5'] = _master()
+
+    assert detect_modbus_unauthorized_master(ctx) == []
+
+
+def test_allowlist_accepts_a_network():
+    ctx = make_context()
+    ctx['config']['modbus_masters'] = _allow('10.0.0.0/24')
+    ctx['modbus']['masters']['10.0.0.5'] = _master()
+    ctx['modbus']['masters']['10.0.1.5'] = _master()
+
+    findings = detect_modbus_unauthorized_master(ctx)
+
+    assert [f['source'] for f in findings] == ['10.0.1.5']
+
+
+def test_empty_allowlist_reports_every_master():
+    """[] is a statement - "nobody may" - unlike None."""
+    ctx = make_context()
+    ctx['config']['modbus_masters'] = []
+    ctx['modbus']['masters']['10.0.0.5'] = _master()
+
+    assert len(detect_modbus_unauthorized_master(ctx)) == 1
+
+
+def test_ipv6_master_against_ipv4_allowlist_is_reported_not_crashed():
+    ctx = make_context()
+    ctx['config']['modbus_masters'] = _allow('10.0.0.0/8')
+    ctx['modbus']['masters']['fe80::1'] = _master()
+
+    assert [f['source'] for f in detect_modbus_unauthorized_master(ctx)] == ['fe80::1']
+
+
+def test_unauthorized_master_mentions_writes_only_when_there_are_some():
+    ctx = make_context()
+    ctx['config']['modbus_masters'] = _allow('10.0.0.1')
+    ctx['modbus']['masters']['10.0.0.5'] = _master(writes=0)
+    ctx['modbus']['masters']['10.0.0.6'] = _master(writes=3)
+
+    by_source = {f['source']: f for f in detect_modbus_unauthorized_master(ctx)}
+
+    assert 'write' not in by_source['10.0.0.5']['description']
+    assert 'including 3 writes' in by_source['10.0.0.6']['description']
+    assert by_source['10.0.0.6']['writes'] == 3
+
+
+def test_unauthorized_master_timeline_is_function_codes_in_first_use_order():
+    ctx = make_context()
+    ctx['config']['modbus_masters'] = _allow('10.0.0.1')
+    ctx['modbus']['masters']['10.0.0.5'] = _master(fcs=(8, 43, 17))
+
+    finding = detect_modbus_unauthorized_master(ctx)[0]
+
+    assert [step['fc'] for step in finding['timeline']] == [8, 43, 17]
+    assert finding['first_frame'] == 1

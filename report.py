@@ -255,7 +255,10 @@ def _field(label, value):
 
 
 def _step(entry):
-    """What a timeline entry is about: a port for scans, a MAC for ARP."""
+    """What a timeline entry is about: a port for scans, a MAC for ARP,
+    a function code for Modbus."""
+    if 'fc' in entry:
+        return f"FC {entry['fc']}"
     return str(entry.get('port', entry.get('mac', '?')))
 
 
@@ -426,7 +429,7 @@ def print_stats(ctx, source=None, full=False):
     # the common case, and an empty block in every report is noise.
     modbus = ctx['modbus']
     if stats['modbus'] or modbus['malformed']:
-        _print_modbus(modbus, full)
+        _print_modbus(modbus, full, ctx['config']['modbus_masters'])
 
 
 def _fc_name(fc):
@@ -441,7 +444,7 @@ def _exception_sort_key(code):
     return (code is None, code or 0)
 
 
-def _print_modbus(modbus, full=False):
+def _print_modbus(modbus, full=False, allowed=None):
     """The MODBUS block: who gives orders, which ones, and how devices answer."""
 
     masters = modbus['masters']
@@ -466,6 +469,14 @@ def _print_modbus(modbus, full=False):
     # One line per master: the three numbers that matter first (how much,
     # how varied, how many writes), then where it sends them.
     print(f"\n  Masters ({len(masters)})")
+
+    # Say whether the masters were checked at all. Without this line an
+    # empty FINDINGS block reads as "all masters are fine", when it really
+    # means "nobody was asked".
+    if allowed is None:
+        print(_c("    not checked against an allowlist - pass --allow-master", _DIM))
+    else:
+        print(_c(f"    allowed: {', '.join(map(str, allowed)) or 'none'}", _DIM))
     for ip in _sort_ips(masters):
         m = masters[ip]
         targets = ', '.join(f"{slave} [{', '.join(map(str, sorted(units)))}]"
@@ -664,14 +675,14 @@ def print_json(ctx, findings, source):
             "first_ts": stats['first_ts'],
             "last_ts": stats['last_ts'],
         },
-        "modbus": _modbus_json(ctx['modbus']),
+        "modbus": _modbus_json(ctx['modbus'], ctx['config']['modbus_masters']),
         "findings": findings,
     }
 
     print(json.dumps(data, indent=2))
 
 
-def _modbus_json(modbus):
+def _modbus_json(modbus, allowed=None):
     """ctx['modbus'] in a shape json.dumps() accepts and a consumer can diff.
 
     Sets become sorted lists, and int-keyed dicts become lists of objects:
@@ -711,6 +722,9 @@ def _modbus_json(modbus):
         })
 
     return {
+        # null = no allowlist was given, [] = an empty one. The findings
+        # only make sense next to the list that produced them.
+        "allowed_masters": None if allowed is None else [str(n) for n in allowed],
         "masters": masters,
         "slaves": slaves,
         "malformed": modbus['malformed'],

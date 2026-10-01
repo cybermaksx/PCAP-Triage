@@ -167,6 +167,24 @@ def make_context():
         'arp_table': arp_table,
         'dns_domains': dns_domains,
         'modbus': modbus,
+
+        # ------------------------------------------------------------------
+        # The one key that is NOT a fact about the capture. It holds what
+        # the analyst told the tool on the command line, filled in by
+        # main.py before any packet is read. feed() never touches it.
+        #
+        # It travels inside the context because the detector contract is
+        # "detect(ctx)" and nothing else: passing settings any other way
+        # would mean main.py knowing which detector wants which setting -
+        # the exact coupling the DETECTORS registry exists to avoid.
+        #
+        #   modbus_masters -- list of ipaddress networks allowed to act as
+        #                     Modbus masters, or None when no allowlist was
+        #                     given (NOT the same as "nobody is allowed")
+        # ------------------------------------------------------------------
+        'config': {
+            'modbus_masters': None,
+        },
     }
 
 

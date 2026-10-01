@@ -46,6 +46,7 @@ This file stays exactly as it is.
 from scapy.all import PcapReader
 from scapy.error import Scapy_Exception
 import argparse
+import ipaddress
 import sys
 # Our own modules. Note the direction of these imports: main.py imports the
 # other three, and none of them import main.py or each other. Keeping arrows
@@ -55,7 +56,32 @@ from detectors import DETECTORS
 import report
 
 
-def parse_arg():
+def _networks(text):
+    """'10.1.1.234,10.0.0.0/24' -> [IPv4Network('10.1.1.234/32'), IPv4Network('10.0.0.0/24')]
+
+    A single address becomes a /32 network, so the detector only ever has
+    to ask one question - "is this IP inside any of these networks?".
+    strict=False accepts '10.0.0.5/24' as the /24 it belongs to instead of
+    refusing it for having host bits set.
+
+    Raising ArgumentTypeError (not ValueError) is what makes argparse print
+    a clean "argument --allow-master: ..." message and exit with code 2,
+    instead of a traceback.
+    """
+    networks = []
+    for part in text.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"not an IP address or network: {part!r}")
+    return networks
+
+
+def parse_arg(argv=None):
+    """argv=None means "read sys.argv" - tests pass a list instead."""
     parser = argparse.ArgumentParser(description = "Pcap-Triage analyse and threat hunting")
     parser.add_argument("pcap_file", help = "name of the .pcap file")
     parser.add_argument("--json", action="store_true",
@@ -63,7 +89,16 @@ def parse_arg():
     parser.add_argument("--full", action="store_true",
                         help="show everything: no truncated lists, full per-packet "
                              "timeline for every finding (long - pipe it into less -R)")
-    return parser.parse_args()
+    # action="extend" merges every occurrence into one flat list, so
+    #   --allow-master 10.1.1.234 --allow-master 10.0.0.0/24
+    #   --allow-master 10.1.1.234,10.0.0.0/24
+    # mean the same thing. Without the flag the value stays None, which the
+    # detector reads as "no allowlist given" - not as "nobody is allowed".
+    parser.add_argument("--allow-master", type=_networks, action="extend",
+                        metavar="IP[/NET][,...]",
+                        help="Modbus masters that are allowed to send requests; any other "
+                             "IP sending to port 502 is reported. Repeatable, accepts CIDR")
+    return parser.parse_args(argv)
 
 
 def main():
@@ -101,6 +136,10 @@ def main():
         report.print_step("collecting facts")
 
         ctx = make_context()
+
+        # What the analyst knows about the site, not something the packets
+        # say - see the note on 'config' in context.make_context().
+        ctx['config']['modbus_masters'] = args.allow_master
 
         with PcapReader(args.pcap_file) as packets:
             for index, packet in enumerate(packets):
