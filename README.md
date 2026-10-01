@@ -9,9 +9,10 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 > keeps memory flat on large captures, a machine-readable JSON mode and a pytest suite.
 >
 > **Phase 2 has started:** Modbus/TCP is parsed and summarised — masters, slaves,
-> function codes, writes, exceptions and malformed traffic on port 502. Two detectors sit
-> on top: a function-code sweep, and any master not on an allowlist given with
-> `--allow-master`. See [Roadmap](#roadmap)
+> function codes, writes, exceptions and malformed traffic on port 502. Three detectors
+> sit on top: a function-code sweep, dangerous commands (denial-of-service diagnostics,
+> malformed, rejected, broadcast and mass writes), and any master not on an allowlist
+> given with `--allow-master`. See [Roadmap](#roadmap)
 > for the honest state of things.
 
 ## Features
@@ -48,6 +49,13 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   codes is mapping what a device accepts, the Modbus counterpart of a port scan. Needs
   no configuration, so it also fires for a sweep from an allowed address. Write codes
   inside the sweep are named in the finding: on a live PLC a "probe" write is a write
+- Modbus dangerous-command detection — not every write, which would bury the analyst
+  in a SCADA master's routine setpoints, but the commands no configured master sends on
+  any site: Force Listen Only Mode (the device goes silent), Restart Communications,
+  Clear Counters, writes to more than 100 distinct addresses, writes to broadcast unit
+  0, writes whose data does not fit their function, coil values other than ON/OFF, and
+  writes the device rejected as an illegal function, address or value. One finding per
+  master and reason, with every frame in its timeline
 - Unauthorized Modbus master detection — the analyst lists the machines allowed to
   give orders (`--allow-master`, IPs or CIDR networks); any other IP sending requests
   to port 502 is reported, with its targets, its writes and the function codes it used
@@ -68,7 +76,7 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   with a non-zero exit code, so a wrapping script can tell a failed run from an
   empty one
 - CLI interface via `argparse`
-- pytest suite — 238 tests over the collector, the Modbus parser, the detectors, the
+- pytest suite — 284 tests over the collector, the Modbus parser, the detectors, the
   registry contract, the command line and all output modes. Modbus expectations are taken from tshark,
   not from the code under test
 
@@ -93,6 +101,16 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   needs per-connection ordering that is not implemented
 - A sweep over unit ids (one function code, units 0..247 — finding devices behind a
   gateway) is a different pattern and is not detected
+- Dangerous-command detection does not judge ordinary writes. A master that writes
+  valid values to ordinary addresses — `10.0.0.9` switching two coils off in
+  `modbus_test.pcap` — is not reported unless it is missing from `--allow-master`.
+  Which machine may write, which addresses and which value ranges are normal is site
+  knowledge the tool does not have
+- Writes to unit 0 are reported as broadcast, but some Modbus/TCP devices take unit 0
+  as their own address and answer it. Telling the two apart needs request/response
+  pairing, so the finding asks the analyst to check
+- Vendor commands that change device state — Schneider's FC 90 (UMAS) stopping a PLC
+  or downloading a program, for instance — are not decoded
 - Masters are only checked against an allowlist the analyst supplies. The tool does
   not learn one from the capture, and an attacker on an allowed address — a
   compromised SCADA server — is not reported by this check
@@ -326,6 +344,43 @@ send garbage on purpose, and a device answering in another protocol is itself a 
 This occasionally disagrees with Wireshark: frames 91–109 above are valid MBAP
 exception responses that Wireshark shows as plain data.
 
+### Dangerous Modbus commands
+
+The same capture, with no flags, also produces:
+
+```
+    ▸ MODBUS_DANGEROUS_COMMAND  HIGH  from 10.0.0.57
+      10.0.0.57 sent Force Listen Only Mode 3x to 10.0.0.3 - the device stops answering anyone until restarted
+      start  2004-08-26 12:01:34.211 UTC  (frame 8)
+      end    2004-08-26 12:01:34.216 UTC  (frame 12)
+      span   0.005 s
+      order  FC 8 sub 4 → FC 8 sub 4 → FC 8 sub 4
+
+    ▸ MODBUS_DANGEROUS_COMMAND  MEDIUM  from 192.168.66.235
+      166.161.16.230 rejected 5 write requests from 192.168.66.235
+      start  2006-07-21 14:24:56.426 UTC  (frame 141)
+      end    2006-07-21 14:25:06.665 UTC  (frame 183)
+      span   10.239 s
+      order  FC 6 exc 3 → FC 15 exc 3 → FC 16 exc 3 → FC 22 exc 3 … (+1)
+```
+
+`10.0.0.57` never sends a single write, so a detector looking only at write function
+codes would miss it entirely — yet putting a device into listen-only mode takes it off
+the network, which is why diagnostics are judged here alongside writes. The same master
+then restarts communications and clears the diagnostic counters. The 20 writes of the
+2012 SCADA master — five registers, valid values, again and again — produce nothing.
+
+| Reason | Severity | What it means |
+|---|---|---|
+| `force_listen_only` | HIGH | FC 8 subfunction 4: the device stops answering anyone |
+| `restart_communications` | HIGH | FC 8 subfunction 1 |
+| `mass_write` | HIGH | more than 100 distinct addresses written by one master |
+| `broadcast_write` | MEDIUM | write to unit 0, executed by every device behind a gateway |
+| `clear_counters` | MEDIUM | FC 8 subfunction 10: diagnostic evidence wiped |
+| `malformed_write` | MEDIUM | data that does not fit the function's layout |
+| `invalid_coil_value` | MEDIUM | FC 5 with a value other than ON (`0xFF00`) or OFF (`0x0000`) |
+| `rejected_write` | MEDIUM | device answered exception 1, 2 or 3 — someone is guessing |
+
 ### Allowed Modbus masters
 
 The set of machines that may send commands to field devices is short and known on
@@ -477,8 +532,8 @@ lets the same command feed a pipe instead.
 ### Running the tests
 
 ```bash
-python -m pytest -m "not slow"    # 233 tests, ~1 s
-python -m pytest                  # 238 tests, ~45 s
+python -m pytest -m "not slow"    # 279 tests, ~1 s
+python -m pytest                  # 284 tests, ~45 s
 ```
 
 The `-m` matters: a bare `pytest` does not put the project directory on the module
@@ -520,7 +575,8 @@ Phase 2 — OT/ICS protocols, the actual goal of this project:
 |---|---|
 | Modbus/TCP detection + MBAP header parsing | Done |
 | Modbus function-code sweep detection | Done |
-| Modbus write-command detection (FC 5/6/15/16/22/23) | Next up |
+| Modbus dangerous-command detection (writes + state-changing diagnostics) | Done |
+| Per-site write policy: allowed writers, addresses, value ranges | Planned |
 | Unauthorized Modbus master detection (`--allow-master`) | Done |
 | Modbus unit-id sweep detection (device discovery behind a gateway) | Planned |
 | DNP3 / S7comm parsing | Planned |
@@ -544,12 +600,12 @@ PCAP-Triage/
 ├── context.py                # Stage 1 — collects facts in a single pass over the packets
 ├── detectors.py              # Stage 2 — turns facts into findings; detector registry
 ├── report.py                 # Stage 3 — all output formatting
-├── modbus.py                 # Modbus/TCP: MBAP parser, function and exception tables
+├── modbus.py                 # Modbus/TCP: MBAP, write and diagnostic parsers; name tables
 ├── tests/
 │   ├── conftest.py           # Shared fixtures: one parsed context per capture
 │   ├── test_context.py       # Counter accuracy and the layer-coverage invariant
 │   ├── test_detectors.py     # Thresholds, finding schema, registry contract
-│   ├── test_modbus.py        # MBAP parser on hand-built bytes, no capture needed
+│   ├── test_modbus.py        # MBAP, write and diagnostic parsers on hand-built bytes
 │   ├── test_main.py          # Command-line parsing (--allow-master)
 │   └── test_report.py        # JSON validity and which stream each helper writes to
 ├── pcaps/                    # Sample captures

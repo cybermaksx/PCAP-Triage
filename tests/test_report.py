@@ -286,3 +286,15 @@ def test_fc_sweep_codes_fold_into_a_range(capsys):
     assert 'codes  0-127' in out
     assert 'FC 0 → FC 1' in out
     assert '[sequential]' in out
+
+
+def test_timeline_detail_is_shown(capsys):
+    finding = {
+        'type': 'MODBUS_DANGEROUS_COMMAND', 'severity': 'HIGH', 'source': '10.0.0.57',
+        'description': 'test',
+        'timeline': [{'fc': 8, 'detail': 'sub 4', 'time': 0.0, 'frame': 8}],
+    }
+
+    report.print_findings([finding])
+
+    assert 'FC 8 sub 4' in capsys.readouterr().out

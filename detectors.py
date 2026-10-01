@@ -35,7 +35,10 @@ main.py does not change. report.py does not change.
 
 import ipaddress
 
-from modbus import WRITE_FCS
+from modbus import (
+    WRITE_FCS, COIL_ON, COIL_OFF,
+    DIAG_RESTART_COMMUNICATIONS, DIAG_FORCE_LISTEN_ONLY, DIAG_CLEAR_COUNTERS,
+)
 
 
 # ======================================================================
@@ -61,6 +64,17 @@ DNS_TUNNEL_NAMES_THRESHOLD = 50
 # HMI up to about 8 (1, 2, 3, 4, 5, 6, 15, 16), an engineering workstation a
 # few more on top (8, 17, 43, a vendor code). A sweep uses dozens to all 128.
 MODBUS_FC_SWEEP_THRESHOLD = 10
+
+# Distinct addresses one master may write to before it counts as a mass
+# write. The SCADA master in modbus_test.pcap writes 5; a recipe download
+# from an HMI can legitimately fill a block of 50-100 registers. One FC 15
+# setting every coil (up to 1968) is far past this on its own.
+MODBUS_MASS_WRITE_THRESHOLD = 100
+
+# Exception codes on a write that mean "you got the address or the value
+# wrong" - the answers someone gets while guessing. 4 (device failure) and
+# 6 (busy) are the device's own trouble and say nothing about the sender.
+MODBUS_GUESSING_EXCEPTIONS = {1, 2, 3}
 
 
 
@@ -391,6 +405,151 @@ def detect_modbus_fc_sweep(ctx, threshold=MODBUS_FC_SWEEP_THRESHOLD):
     return found_threats
 
 
+# Each reason the dangerous-command detector can report, with its severity
+# and how to say it. Severity is per reason, not per detector: forcing a
+# device into listen-only mode takes it off the network, a malformed write
+# that the device rejected changed nothing.
+_DANGEROUS_REASONS = {
+    'force_listen_only': (
+        'HIGH', '{ip} sent Force Listen Only Mode {n}x to {targets} - '
+                'the device stops answering anyone until restarted'),
+    'restart_communications': (
+        'HIGH', '{ip} sent Restart Communications {n}x to {targets}'),
+    'mass_write': (
+        'HIGH', '{ip} wrote to {n} different addresses on {targets}'),
+    'broadcast_write': (
+        'MEDIUM', '{ip} sent {n} writes to unit 0 (broadcast) via {targets} - '
+                  'every device behind a gateway executes them. Some TCP '
+                  'devices take unit 0 as their own address: check whether '
+                  'it answered'),
+    'clear_counters': (
+        'MEDIUM', '{ip} cleared the diagnostic counters {n}x on {targets}'),
+    'malformed_write': (
+        'MEDIUM', '{ip} sent {n} malformed write requests to {targets}'),
+    'invalid_coil_value': (
+        'MEDIUM', '{ip} sent {n} coil writes with a value other than '
+                  'ON (0xFF00) or OFF (0x0000) to {targets}'),
+    'rejected_write': (
+        'MEDIUM', '{targets} rejected {n} write requests from {ip}'),
+}
+
+_DANGEROUS_DIAGNOSTICS = {
+    DIAG_FORCE_LISTEN_ONLY: 'force_listen_only',
+    DIAG_RESTART_COMMUNICATIONS: 'restart_communications',
+    DIAG_CLEAR_COUNTERS: 'clear_counters',
+}
+
+
+def detect_modbus_dangerous_command(ctx, mass_threshold=MODBUS_MASS_WRITE_THRESHOLD):
+    """Find Modbus commands that are abnormal on ANY site.
+
+    Not every write - a SCADA master writes setpoints all day (20 times in
+    the first 40 seconds of modbus_test.pcap), and an alert on each would
+    be ignored within a day. These are the writes and commands that no
+    configured master sends, whatever the plant:
+
+      force_listen_only       FC 8/4   - device goes silent: denial of service
+      restart_communications  FC 8/1   - device drops its communication state
+      clear_counters          FC 8/10  - diagnostic evidence wiped
+      mass_write              more than mass_threshold distinct addresses
+      broadcast_write         unit 0   - executed by every device behind a gateway
+      malformed_write         data that does not fit the function's layout
+      invalid_coil_value      FC 5 with a value other than ON/OFF
+      rejected_write          device answered exception 1, 2 or 3: guessing
+
+    Needs no allowlist and no baseline. Who is ALLOWED to write is a
+    different question, answered with site knowledge, not here.
+
+    One finding per master and reason, not per packet: three Force Listen
+    Only requests are one fact about one master, with three frames.
+    """
+    found_threats = []
+    modbus = ctx['modbus']
+
+    # master ip -> reason -> list of events. Each event:
+    #   {'slave', 'fc', 'detail', 'time', 'frame'}
+    events = {}
+
+    def note(ip, reason, slave, fc, detail, ts, frame):
+        events.setdefault(ip, {}).setdefault(reason, []).append({
+            'slave': slave, 'fc': fc, 'detail': detail, 'time': ts, 'frame': frame,
+        })
+
+    for ip, master in modbus['masters'].items():
+
+        for d in master['diagnostics']:
+            reason = _DANGEROUS_DIAGNOSTICS.get(d['subfunction'])
+            if reason:
+                note(ip, reason, d['slave'], 8, f"sub {d['subfunction']}",
+                     d['time'], d['frame'])
+
+        # (slave, unit, space, address) - coils and registers are separate
+        # address spaces, so coil 100 and register 100 are two addresses.
+        written = set()
+
+        for w in master['writes']:
+            if w['malformed']:
+                note(ip, 'malformed_write', w['slave'], w['fc'], None, w['time'], w['frame'])
+                # Nothing below can be judged without an address.
+                continue
+
+            if w['unit'] == 0:
+                note(ip, 'broadcast_write', w['slave'], w['fc'], f"addr {w['address']}",
+                     w['time'], w['frame'])
+
+            if w['fc'] == 5 and w['value'] not in (COIL_ON, COIL_OFF):
+                note(ip, 'invalid_coil_value', w['slave'], 5,
+                     f"addr {w['address']} = 0x{w['value']:04X}", w['time'], w['frame'])
+
+            for address in range(w['address'], w['address'] + w['quantity']):
+                written.add((w['slave'], w['unit'], w['space'], address))
+
+        if len(written) > mass_threshold:
+            # The event list is every valid write; the finding's 'n' is the
+            # address count, which is what crossed the threshold.
+            for w in master['writes']:
+                if not w['malformed']:
+                    note(ip, 'mass_write', w['slave'], w['fc'],
+                         f"addr {w['address']}+{w['quantity']}", w['time'], w['frame'])
+            events[ip]['mass_write_addresses'] = len(written)
+
+    for r in modbus['rejected_writes']:
+        if r['code'] in MODBUS_GUESSING_EXCEPTIONS:
+            note(r['master'], 'rejected_write', r['slave'], r['fc'], f"exc {r['code']}",
+                 r['time'], r['frame'])
+
+    # ---------------- events -> findings ----------------
+    for ip, by_reason in events.items():
+        address_count = by_reason.pop('mass_write_addresses', None)
+
+        for reason, items in by_reason.items():
+            severity, template = _DANGEROUS_REASONS[reason]
+            items.sort(key=lambda e: (e['time'], e['frame']))
+            targets = sorted({e['slave'] for e in items})
+
+            n = address_count if reason == 'mass_write' else len(items)
+
+            found_threats.append({
+                'type': 'MODBUS_DANGEROUS_COMMAND',
+                'severity': severity,
+                'source': ip,
+                'reason': reason,
+                'description': template.format(ip=ip, n=n, targets=', '.join(targets)),
+                'targets': targets,
+                'count': n,
+                'start': items[0]['time'],
+                'end': items[-1]['time'],
+                'first_frame': items[0]['frame'],
+                'last_frame': items[-1]['frame'],
+                'duration': items[-1]['time'] - items[0]['time'],
+                'timeline': [{'fc': e['fc'], 'detail': e['detail'],
+                              'time': e['time'], 'frame': e['frame']}
+                             for e in items],
+            })
+
+    return found_threats
+
+
 # ======================================================================
 # THE REGISTRY
 #
@@ -409,4 +568,5 @@ DETECTORS = [
     detect_dns_tunnel,
     detect_modbus_unauthorized_master,
     detect_modbus_fc_sweep,
+    detect_modbus_dangerous_command,
 ]

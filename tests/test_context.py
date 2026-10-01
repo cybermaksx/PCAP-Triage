@@ -297,7 +297,8 @@ def test_bare_acks_are_not_malformed(modbus_ctx):
 
 def test_no_modbus_in_a_capture_without_it(test_ctx):
     assert test_ctx['stats']['modbus'] == 0
-    assert test_ctx['modbus'] == {'masters': {}, 'slaves': {}, 'malformed': []}
+    assert test_ctx['modbus'] == {'masters': {}, 'slaves': {}, 'malformed': [],
+                                  'rejected_writes': []}
 
 
 def test_config_starts_empty_and_feed_leaves_it_alone(modbus_ctx):
@@ -334,3 +335,55 @@ def test_fc_sweep_on_modbus_test(modbus_ctx):
     assert findings[0]['function_codes'] == list(range(128))
     assert findings[0]['sequential'] is True
     assert findings[0]['first_frame'] == 124
+
+
+def test_modbus_write_details_decoded(modbus_ctx):
+    """Addresses and values from tshark's modbus.reference_num / regval."""
+    writes = modbus_ctx['modbus']['masters']['10.1.1.234']['writes']
+
+    by_frame = {w['frame']: w for w in writes}
+    assert (by_frame[481]['address'], by_frame[481]['value']) == (500, 80)
+    assert (by_frame[484]['address'], by_frame[484]['value']) == (502, 60)
+
+    # The SCADA master only ever writes these five registers.
+    assert {w['address'] for w in writes} == {100, 101, 102, 500, 502}
+    assert not any(w['malformed'] for w in writes)
+
+
+def test_modbus_malformed_writes_flagged(modbus_ctx):
+    writes = modbus_ctx['modbus']['masters']['192.168.66.235']['writes']
+
+    assert [w['frame'] for w in writes if w['malformed']] == [140, 163, 165, 180, 182]
+    # The one well-formed write of the sweep: coil 0 OFF, which the device accepted.
+    assert [(w['frame'], w['address'], w['value']) for w in writes if not w['malformed']] == [(138, 0, 0)]
+
+
+def test_modbus_diagnostics_collected(modbus_ctx):
+    diagnostics = modbus_ctx['modbus']['masters']['10.0.0.57']['diagnostics']
+
+    assert [d['subfunction'] for d in diagnostics] == [4, 4, 4, 1, 1, 1, 10, 10]
+
+
+def test_modbus_rejected_writes(modbus_ctx):
+    rejected = modbus_ctx['modbus']['rejected_writes']
+
+    assert [(r['frame'], r['fc'], r['code']) for r in rejected] == [
+        (141, 6, 3), (164, 15, 3), (166, 16, 3), (181, 22, 3), (183, 23, 3),
+    ]
+    assert {r['master'] for r in rejected} == {'192.168.66.235'}
+
+
+def test_dangerous_commands_on_modbus_test(modbus_ctx):
+    """End to end: which master gets which reason - and who stays silent."""
+    from detectors import detect_modbus_dangerous_command
+
+    reasons = {}
+    for f in detect_modbus_dangerous_command(modbus_ctx):
+        reasons.setdefault(f['source'], set()).add(f['reason'])
+
+    assert reasons == {
+        '10.0.0.57': {'force_listen_only', 'restart_communications', 'clear_counters'},
+        '192.168.66.235': {'malformed_write', 'rejected_write'},
+    }
+    # Not in the dict, on purpose: 10.1.1.234 (SCADA, 20 normal writes) and
+    # 10.0.0.9 (three ordinary, accepted writes).

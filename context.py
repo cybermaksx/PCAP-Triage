@@ -35,8 +35,8 @@ from scapy.all import IP, TCP, UDP, ICMP, ARP, DNS, IPv6, UDPerror, DNSQR, Paddi
 # Modbus/TCP knowledge lives in its own module. parse_mbap() turns a TCP
 # payload into fields (or None if it is not Modbus); MODBUS_PORT tells feed()
 # which packets to hand it; WRITE_FCS marks the requests worth remembering
-# one by one.
-from modbus import parse_mbap, MODBUS_PORT, WRITE_FCS
+# one by one, and parse_write() / parse_diagnostic() decode what they say.
+from modbus import parse_mbap, parse_write, parse_diagnostic, MODBUS_PORT, WRITE_FCS
 
 
 def make_context():
@@ -142,7 +142,13 @@ def make_context():
     #                    # first use of each FC, in order - same idea as
     #                    # 'ports' in a scan record
     #     'fc_counts': {4: 317, 3: 73, 6: 20},
-    #     'writes': [{'slave', 'unit', 'fc', 'time', 'frame'}, ...],
+    #     'writes': [{'slave', 'unit', 'fc', 'time', 'frame',
+    #                 'space', 'address', 'quantity', 'value',
+    #                 'malformed'}, ...],
+    #                    # space/address/quantity/value are None when the
+    #                    # write is malformed - see modbus.parse_write()
+    #     'diagnostics': [{'slave', 'unit', 'subfunction', 'time', 'frame'}, ...],
+    #                    # every FC 8 request; subfunction None if cut short
     #   }
     #
     # Slave record:
@@ -151,11 +157,19 @@ def make_context():
     #     'units': {255},
     #     'exceptions': {1: 104, 3: 18},         # exception code -> count
     #   }
+    #
+    # rejected_writes -- exception responses to WRITE function codes:
+    #   [{'master', 'slave', 'unit', 'fc', 'code', 'time', 'frame'}, ...]
+    #   Kept apart from the slave record because the detector needs the
+    #   MASTER, and in a response the master is the destination. No
+    #   request/response pairing is needed: the exception itself carries
+    #   the function code it answers (0x86 = "FC 6 failed").
     # ------------------------------------------------------------------
     modbus = {
         'masters': {},
         'slaves': {},
         'malformed': [],      # [{'src', 'dst', 'time', 'frame'}, ...]
+        'rejected_writes': [],
     }
     return {
         'stats': stats,
@@ -271,6 +285,7 @@ def _record_modbus(ctx, packet, ts, frame):
             'function_codes': {},
             'fc_counts': {},
             'writes': [],
+            'diagnostics': [],
         })
 
         master['requests'] += 1
@@ -284,8 +299,22 @@ def _record_modbus(ctx, packet, ts, frame):
         master['fc_counts'][fc] = master['fc_counts'].get(fc, 0) + 1
 
         if fc in WRITE_FCS:
+            # None = the data does not fit the layout of this function.
+            details = parse_write(fc, message['data'])
             master['writes'].append({
                 'slave': dst, 'unit': unit, 'fc': fc,
+                'time': ts, 'frame': frame,
+                'space': details['space'] if details else None,
+                'address': details['address'] if details else None,
+                'quantity': details['quantity'] if details else None,
+                'value': details['value'] if details else None,
+                'malformed': details is None,
+            })
+
+        elif fc == 8:
+            master['diagnostics'].append({
+                'slave': dst, 'unit': unit,
+                'subfunction': parse_diagnostic(message['data']),
                 'time': ts, 'frame': frame,
             })
 
@@ -303,6 +332,13 @@ def _record_modbus(ctx, packet, ts, frame):
             # None when the response was cut off before the code byte.
             code = message['exception_code']
             slave['exceptions'][code] = slave['exceptions'].get(code, 0) + 1
+
+            if message['function_code'] in WRITE_FCS:
+                modbus['rejected_writes'].append({
+                    'master': dst, 'slave': src, 'unit': message['unit_id'],
+                    'fc': message['function_code'], 'code': code,
+                    'time': ts, 'frame': frame,
+                })
 
 
 def feed(ctx, packet, index):

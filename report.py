@@ -258,6 +258,10 @@ def _step(entry):
     """What a timeline entry is about: a port for scans, a MAC for ARP,
     a function code for Modbus."""
     if 'fc' in entry:
+        # 'detail' narrows it down where the code alone is not enough:
+        # "FC 8 sub 4" is Force Listen Only, "FC 8 sub 0" is a harmless echo.
+        if entry.get('detail'):
+            return f"FC {entry['fc']} {entry['detail']}"
         return f"FC {entry['fc']}"
     return str(entry.get('port', entry.get('mac', '?')))
 

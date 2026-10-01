@@ -193,3 +193,130 @@ def parse_mbap(payload):
             'exception_code': exception_code,
             'data':           payload[MBAP_HEADER_LEN + 1:],
         }
+
+
+# ======================================================================
+# WHAT A WRITE OR A DIAGNOSTIC REQUEST SAYS
+#
+# parse_mbap() stops at the function code and hands back the rest as
+# 'data'. What that data MEANS depends on the function code, so it is
+# decoded here, one function at a time, and only for the requests the
+# dangerous-command detector looks at.
+#
+# Every layout below is a REQUEST layout. A response to a write either
+# echoes the request or is an exception - and for an exception, the
+# function code and exception code from parse_mbap() are all that matter.
+# ======================================================================
+
+# Function code 8 is a family of commands chosen by a 2-byte subfunction.
+# Most are harmless counters; these three change the device's state.
+DIAG_RESTART_COMMUNICATIONS = 1     # restarts the serial port, ends listen-only
+DIAG_FORCE_LISTEN_ONLY = 4          # device stops answering ANYONE until restarted
+DIAG_CLEAR_COUNTERS = 10            # wipes the diagnostic counters - and the evidence
+
+DIAGNOSTIC_NAMES = {
+    0:  'Return Query Data',
+    DIAG_RESTART_COMMUNICATIONS: 'Restart Communications Option',
+    2:  'Return Diagnostic Register',
+    DIAG_FORCE_LISTEN_ONLY: 'Force Listen Only Mode',
+    DIAG_CLEAR_COUNTERS: 'Clear Counters and Diagnostic Register',
+}
+
+# The only two values Write Single Coil accepts: ON and OFF. Anything else
+# is a protocol violation the device must reject.
+COIL_ON = 0xFF00
+COIL_OFF = 0x0000
+
+# Per-request limits from the specification. A request beyond them is not
+# a big write, it is an invalid one.
+MAX_WRITE_COILS = 1968          # FC 15
+MAX_WRITE_REGISTERS = 123       # FC 16
+MAX_READWRITE_REGISTERS = 121   # FC 23, write half
+
+
+def parse_write(fc, data):
+    """Decode the data of a write request.
+
+    Arguments:
+        fc   -- function code, one of WRITE_FCS
+        data -- the 'data' field returned by parse_mbap()
+
+    Returns:
+        {
+            'space':    'coil' or 'register',   # coils and registers are
+                                                # separate address spaces
+            'address':  100,                    # first address written
+            'quantity': 1,                      # how many from there on
+            'value':    80,                     # FC 5 / FC 6 only, else None
+        }
+
+    ...or None when the data does not fit the layout of that function -
+    too short, too long, a count that disagrees with the bytes present.
+    A write the device cannot even parse is a fact worth reporting, so
+    None here means "malformed", not "ignore".
+
+    Layouts (all big-endian, after the function code):
+
+        FC 5   address(2) value(2)
+        FC 6   address(2) value(2)
+        FC 15  address(2) quantity(2) byte_count(1) values(byte_count)
+        FC 16  address(2) quantity(2) byte_count(1) values(byte_count)
+        FC 22  address(2) and_mask(2) or_mask(2)
+        FC 23  read_address(2) read_quantity(2)
+               write_address(2) write_quantity(2) byte_count(1) values(...)
+    """
+    if fc in (5, 6):
+        if len(data) != 4:
+            return None
+        address, value = struct.unpack('>HH', data)
+        return {'space': 'coil' if fc == 5 else 'register',
+                'address': address, 'quantity': 1, 'value': value}
+
+    if fc in (15, 16):
+        if len(data) < 5:
+            return None
+        address, quantity, byte_count = struct.unpack('>HHB', data[:5])
+
+        # Coils are packed 8 to a byte, registers take 2 bytes each.
+        if fc == 15:
+            limit, expected_bytes = MAX_WRITE_COILS, (quantity + 7) // 8
+        else:
+            limit, expected_bytes = MAX_WRITE_REGISTERS, quantity * 2
+
+        # Three numbers that must agree: quantity within the limit, the
+        # byte count it implies, and the bytes actually present.
+        if not (1 <= quantity <= limit):
+            return None
+        if byte_count != expected_bytes or len(data) - 5 != byte_count:
+            return None
+        return {'space': 'coil' if fc == 15 else 'register',
+                'address': address, 'quantity': quantity, 'value': None}
+
+    if fc == 22:
+        if len(data) != 6:
+            return None
+        address = struct.unpack('>H', data[:2])[0]
+        return {'space': 'register', 'address': address, 'quantity': 1, 'value': None}
+
+    if fc == 23:
+        if len(data) < 9:
+            return None
+        _, _, address, quantity, byte_count = struct.unpack('>HHHHB', data[:9])
+        if not (1 <= quantity <= MAX_READWRITE_REGISTERS):
+            return None
+        if byte_count != quantity * 2 or len(data) - 9 != byte_count:
+            return None
+        return {'space': 'register', 'address': address, 'quantity': quantity, 'value': None}
+
+    # Not a write function code at all - a caller mistake, not bad data.
+    raise ValueError(f"parse_write: function code {fc} is not a write")
+
+
+def parse_diagnostic(data):
+    """The subfunction of an FC 8 request, or None if the data is too short.
+
+        FC 8   subfunction(2) data(2, usually)
+    """
+    if len(data) < 2:
+        return None
+    return struct.unpack('>H', data[:2])[0]

@@ -15,6 +15,7 @@ import ipaddress
 from context import make_context
 from detectors import (
     DETECTORS,
+    MODBUS_MASS_WRITE_THRESHOLD,
     MODBUS_FC_SWEEP_THRESHOLD,
     FIN_SCAN_THRESHOLD,
     NULL_SCAN_THRESHOLD,
@@ -22,6 +23,7 @@ from detectors import (
     XMAS_SCAN_THRESHOLD,
     detect_fin_scan,
     detect_mitm_attack,
+    detect_modbus_dangerous_command,
     detect_modbus_fc_sweep,
     detect_modbus_unauthorized_master,
     detect_null_scan,
@@ -430,9 +432,28 @@ def _master(requests=5, slaves=None, fcs=(3,), writes=0):
         'slaves': slaves or {'10.0.0.100': {1}},
         'function_codes': {fc: (1000.0 + i, i + 1) for i, fc in enumerate(fcs)},
         'fc_counts': {fc: 1 for fc in fcs},
-        'writes': [{'slave': '10.0.0.100', 'unit': 1, 'fc': 6,
-                    'time': 1005.0, 'frame': 3}] * writes,
+        'writes': [_write(address=100 + i) for i in range(writes)],
+        'diagnostics': [],
     }
+
+
+def _write(fc=6, address=100, quantity=1, value=0, unit=1, malformed=False,
+           slave='10.0.0.100', ts=1005.0, frame=3):
+    """One write event the way feed() records it."""
+    space = 'coil' if fc in (5, 15) else 'register'
+    return {
+        'slave': slave, 'unit': unit, 'fc': fc, 'time': ts, 'frame': frame,
+        'space': None if malformed else space,
+        'address': None if malformed else address,
+        'quantity': None if malformed else quantity,
+        'value': None if malformed else value,
+        'malformed': malformed,
+    }
+
+
+def _diag(subfunction, frame=1):
+    return {'slave': '10.0.0.100', 'unit': 1, 'subfunction': subfunction,
+            'time': 1000.0 + frame, 'frame': frame}
 
 
 def _allow(*networks):
@@ -587,3 +608,153 @@ def test_fc_sweep_order_and_sequential_flag():
     assert by_source['10.0.0.6']['sequential'] is False
     assert [step['fc'] for step in by_source['10.0.0.6']['timeline']][:3] == [7, 3, 19]
     assert by_source['10.0.0.6']['function_codes'] == sorted(by_source['10.0.0.6']['function_codes'])
+
+
+# ======================================================================
+# Modbus: dangerous commands
+# ======================================================================
+
+def _dangerous(ctx):
+    """reason -> finding, for a context with a single master."""
+    return {f['reason']: f for f in detect_modbus_dangerous_command(ctx)}
+
+
+def test_dangerous_silent_on_normal_scada_writes():
+    """Five registers, valid values, rewritten again and again."""
+    ctx = make_context()
+    master = _master(requests=400)
+    master['writes'] = [_write(address=a, frame=i)
+                        for i, a in enumerate([100, 101, 102, 500, 502] * 20)]
+    ctx['modbus']['masters']['10.0.0.5'] = master
+
+    assert detect_modbus_dangerous_command(ctx) == []
+
+
+@pytest.mark.parametrize("subfunction, reason, severity", [
+    (4, 'force_listen_only', 'HIGH'),
+    (1, 'restart_communications', 'HIGH'),
+    (10, 'clear_counters', 'MEDIUM'),
+])
+def test_dangerous_diagnostics(subfunction, reason, severity):
+    ctx = make_context()
+    master = _master()
+    master['diagnostics'] = [_diag(subfunction, 1), _diag(subfunction, 2)]
+    ctx['modbus']['masters']['10.0.0.5'] = master
+
+    found = _dangerous(ctx)
+
+    assert set(found) == {reason}
+    assert found[reason]['severity'] == severity
+    assert found[reason]['count'] == 2               # one finding, two frames
+    assert found[reason]['timeline'][0]['detail'] == f'sub {subfunction}'
+
+
+def test_harmless_diagnostics_are_ignored():
+    """Sub 0 (echo) is what the 2006 sweep sent in frame 146; None = cut short."""
+    ctx = make_context()
+    master = _master()
+    master['diagnostics'] = [_diag(0), _diag(2), _diag(None)]
+    ctx['modbus']['masters']['10.0.0.5'] = master
+
+    assert detect_modbus_dangerous_command(ctx) == []
+
+
+def test_malformed_write_is_reported_and_not_judged_further():
+    """No address -> no broadcast, coil-value or mass-write check on it."""
+    ctx = make_context()
+    master = _master()
+    master['writes'] = [_write(fc=5, unit=0, malformed=True)]
+    ctx['modbus']['masters']['10.0.0.5'] = master
+
+    assert set(_dangerous(ctx)) == {'malformed_write'}
+
+
+def test_broadcast_write():
+    ctx = make_context()
+    master = _master()
+    master['writes'] = [_write(unit=0), _write(unit=1)]
+    ctx['modbus']['masters']['10.0.0.5'] = master
+
+    found = _dangerous(ctx)
+
+    assert set(found) == {'broadcast_write'}
+    assert found['broadcast_write']['count'] == 1
+
+
+@pytest.mark.parametrize("value, flagged", [
+    (0x0000, False),
+    (0xFF00, False),
+    (0x0001, True),
+    (0xFFFF, True),
+])
+def test_invalid_coil_value(value, flagged):
+    ctx = make_context()
+    master = _master()
+    master['writes'] = [_write(fc=5, value=value)]
+    ctx['modbus']['masters']['10.0.0.5'] = master
+
+    assert ('invalid_coil_value' in _dangerous(ctx)) is flagged
+
+
+def test_register_values_are_not_coil_checked():
+    """0x0001 is a perfectly good register value."""
+    ctx = make_context()
+    master = _master()
+    master['writes'] = [_write(fc=6, value=1)]
+    ctx['modbus']['masters']['10.0.0.5'] = master
+
+    assert detect_modbus_dangerous_command(ctx) == []
+
+
+@pytest.mark.parametrize("addresses, expected", [
+    (MODBUS_MASS_WRITE_THRESHOLD, False),         # '>' not '>='
+    (MODBUS_MASS_WRITE_THRESHOLD + 1, True),
+])
+def test_mass_write_threshold_boundary(addresses, expected):
+    ctx = make_context()
+    master = _master()
+    master['writes'] = [_write(address=a) for a in range(addresses)]
+    ctx['modbus']['masters']['10.0.0.5'] = master
+
+    assert ('mass_write' in _dangerous(ctx)) is expected
+
+
+def test_mass_write_counts_every_address_of_a_multiple_write():
+    """One FC 15 setting 200 coils is 200 addresses, not one request."""
+    ctx = make_context()
+    master = _master()
+    master['writes'] = [_write(fc=15, address=0, quantity=200)]
+    ctx['modbus']['masters']['10.0.0.5'] = master
+
+    found = _dangerous(ctx)
+
+    assert found['mass_write']['count'] == 200
+
+
+def test_mass_write_keeps_coils_and_registers_apart():
+    """Coil 5 and register 5 are two addresses - 2 x 60 = 120 > 100."""
+    ctx = make_context()
+    master = _master()
+    master['writes'] = ([_write(fc=5, address=a) for a in range(60)] +
+                        [_write(fc=6, address=a) for a in range(60)])
+    ctx['modbus']['masters']['10.0.0.5'] = master
+
+    assert _dangerous(ctx)['mass_write']['count'] == 120
+
+
+@pytest.mark.parametrize("code, flagged", [
+    (1, True), (2, True), (3, True),     # guessing
+    (4, False), (6, False),              # the device's own trouble
+])
+def test_rejected_write_only_for_guessing_exceptions(code, flagged):
+    ctx = make_context()
+    ctx['modbus']['rejected_writes'] = [{
+        'master': '10.0.0.5', 'slave': '10.0.0.100', 'unit': 1,
+        'fc': 6, 'code': code, 'time': 1000.0, 'frame': 7,
+    }]
+
+    found = _dangerous(ctx)
+
+    assert ('rejected_write' in found) is flagged
+    if flagged:
+        assert found['rejected_write']['source'] == '10.0.0.5'   # the master, not the device

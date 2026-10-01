@@ -13,7 +13,7 @@ import random
 
 import pytest
 
-from modbus import EXCEPTION_BIT, WRITE_FCS, parse_mbap
+from modbus import EXCEPTION_BIT, WRITE_FCS, parse_diagnostic, parse_mbap, parse_write
 
 
 # ======================================================================
@@ -128,3 +128,58 @@ def test_never_raises_on_garbage():
 def test_write_fcs_do_not_include_reads():
     assert WRITE_FCS.isdisjoint({1, 2, 3, 4})
     assert EXCEPTION_BIT == 0x80
+
+
+# ======================================================================
+# parse_write - the data of a write request, after the function code.
+# The hex below is ONLY that data part.
+# ======================================================================
+
+@pytest.mark.parametrize("fc, hex_data, expected", [
+    # FC 6, register 500 = 80: frame 481 of modbus_test.pcap
+    (6,  '01f4 0050',                  {'space': 'register', 'address': 500, 'quantity': 1, 'value': 80}),
+    # FC 5, coil 2 OFF: frame 60
+    (5,  '0002 0000',                  {'space': 'coil', 'address': 2, 'quantity': 1, 'value': 0}),
+    (5,  '0002 ff00',                  {'space': 'coil', 'address': 2, 'quantity': 1, 'value': 0xFF00}),
+    # FC 15, 10 coils from 0: 2 bytes of packed bits
+    (15, '0000 000a 02 ff03',          {'space': 'coil', 'address': 0, 'quantity': 10, 'value': None}),
+    # FC 16, 2 registers from 100
+    (16, '0064 0002 04 0001 0002',     {'space': 'register', 'address': 100, 'quantity': 2, 'value': None}),
+    # FC 22, mask write register 4
+    (22, '0004 00f2 0025',             {'space': 'register', 'address': 4, 'quantity': 1, 'value': None}),
+    # FC 23, read 6 from 3, write 3 to 14
+    (23, '0003 0006 000e 0003 06 00ff 00ff 00ff',
+                                       {'space': 'register', 'address': 14, 'quantity': 3, 'value': None}),
+])
+def test_parse_write_valid(fc, hex_data, expected):
+    assert parse_write(fc, bytes.fromhex(hex_data)) == expected
+
+
+@pytest.mark.parametrize("fc, hex_data, why", [
+    # The five malformed writes of the 2006 sweep, frames 140-182
+    (6,  '0000 0000 0000',             'FC 6 with two extra bytes (frame 140)'),
+    (15, '0000 0000 00',               'FC 15 quantity 0 (frame 163)'),
+    (16, '0000 0000 00',               'FC 16 quantity 0 (frame 165)'),
+    (22, '0000 0000',                  'FC 22 without the or-mask (frame 180)'),
+    (23, '0000 0000',                  'FC 23 cut off after the read half (frame 182)'),
+    # Counts that disagree
+    (16, '0064 0002 02 0001',          'byte count says 1 register, quantity says 2'),
+    (16, '0064 0002 04 0001',          'byte count 4, only 2 bytes present'),
+    (15, '0000 000a 01 ff',            '10 coils need 2 bytes, not 1'),
+    (16, '0000 007c f8' + '00' * 248,  '124 registers, over the limit of 123'),
+    (5,  '0002',                       'FC 5 without a value'),
+])
+def test_parse_write_malformed(fc, hex_data, why):
+    assert parse_write(fc, bytes.fromhex(hex_data)) is None, why
+
+
+def test_parse_write_refuses_a_non_write_code():
+    """A caller bug, not bad data - so it raises instead of returning None."""
+    with pytest.raises(ValueError):
+        parse_write(3, bytes.fromhex('0000 0001'))
+
+
+def test_parse_diagnostic():
+    assert parse_diagnostic(bytes.fromhex('0004 0000')) == 4      # frame 8
+    assert parse_diagnostic(bytes.fromhex('000a 0000')) == 10     # frame 23
+    assert parse_diagnostic(bytes.fromhex('00')) is None
