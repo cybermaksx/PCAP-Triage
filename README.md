@@ -2,18 +2,20 @@
 
 A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` captures — built to grow from generic traffic statistics into OT/ICS-aware threat detection.
 
-> **Status: Phase 1 complete.** Traffic statistics, IPv4/IPv6 accounting, five scan
-> detectors (SYN, FIN, UDP, NULL, XMAS), ARP spoofing and DNS tunneling detection work
-> today. Every finding says when it started and ended, which Wireshark frame to look at,
-> and in what order the ports were hit. All of it sits on top of a streaming reader that
-> keeps memory flat on large captures, a machine-readable JSON mode and a pytest suite.
+> **Status: complete (v1.0).** The tool does what it set out to do, from generic traffic
+> statistics to OT-aware detection:
 >
-> **Phase 2 has started:** Modbus/TCP is parsed and summarised — masters, slaves,
-> function codes, writes, exceptions and malformed traffic on port 502. Three detectors
-> sit on top: a function-code sweep, dangerous commands (denial-of-service diagnostics,
-> malformed, rejected, broadcast and mass writes), and masters or writers missing from
-> the allowlists given with `--allow-master` and `--allow-writer`. See [Roadmap](#roadmap)
-> for the honest state of things.
+> - **Network:** traffic statistics with IPv4/IPv6 accounting, five scan detectors (SYN,
+>   FIN, UDP, NULL, XMAS), ARP spoofing and DNS tunneling. Every finding says when it
+>   started and ended, which Wireshark frame to look at, and in what order things happened.
+> - **Modbus/TCP:** its own MBAP parser and four detectors — a function-code sweep and
+>   dangerous commands with no configuration at all, plus unauthorized masters and writers
+>   against allowlists given with `--allow-master` and `--allow-writer`.
+>
+> It reads large captures in flat memory, prints a terminal report or JSON, and is covered
+> by 301 tests whose Modbus expectations come from tshark. What it does not do is listed
+> under [Known limitations](#features); what it could do next is under
+> [Ideas](#ideas-not-commitments) — none of it is promised.
 
 ## Features
 
@@ -579,58 +581,49 @@ The `-m` matters: a bare `pytest` does not put the project directory on the modu
 search path and fails to import `context`. The five tests marked `slow` are the ones
 that parse `synscan.pcapng`, which is 131 428 packets.
 
-## Roadmap
+## What was built
 
-Phase 1 — generic static analysis:
+The project grew in two stages. Everything below works and is tested.
 
-| Feature | Status |
+**Generic analysis**
+
+- Protocol distribution, IPv4/IPv6 accounting split by OSI layer, unique addresses and
+  ports, packet sizes
+- SYN, FIN, UDP, NULL and XMAS scan detection
+- ARP spoofing and DNS tunneling detection
+- Start and end time, Wireshark frame numbers and order on every finding
+- Single-pass streaming collector, detector registry, terminal report, `--json`,
+  `--full`, clean errors and exit codes
+
+**Modbus/TCP**
+
+- MBAP parsing with its own validation, including malformed traffic on port 502
+- Function-code sweep detection
+- Dangerous-command detection: Force Listen Only, Restart Communications, Clear
+  Counters, mass, broadcast, malformed, invalid-coil and rejected writes
+- Unauthorized master detection (`--allow-master`)
+- Unauthorized write detection (`--allow-writer`)
+
+## Ideas, not commitments
+
+Directions the tool could take. They are written down so they are not forgotten, not
+because they are planned — each one is a project of its own, about the size of the
+whole Modbus stage.
+
+| Idea | What it would add |
 |---|---|
-| Protocol distribution (TCP/UDP/ICMP/ARP/DNS) | Done |
-| Unique IP / port extraction | Done |
-| Packet size metrics | Done |
-| SYN scan detection (threshold-based) | Done |
-| FIN (stealth) scan detection | Done |
-| CLI via argparse | Done |
-| Refactor into single-pass collector + detector modules | Done |
-| Graceful error handling for missing / invalid files | Done |
-| Format-agnostic finding output (any detector prints correctly) | Done |
-| Readable console formatting (widths, sorted lists, long-list handling) | Done |
-| UDP scan detection (ICMP port-unreachable analysis) | Done |
-| IPv4 / IPv6 accounting split by OSI layer | Done |
-| Unit tests (pytest) | Done |
-| NULL scan detection (flagless TCP) | Done |
-| XMAS scan detection (FIN+PSH+URG) | Done |
-| JSON report output (`--json`) | Done |
-| ARP spoofing detection (MITM precursor) | Done |
-| Streaming reader for large captures (`PcapReader`) | Done |
-| Non-zero exit code and stderr for failures | Done |
-| DNS tunneling detection (label length + unique names) | Done |
-| Start / end time, frame numbers and scan order on findings | Done |
-| Full untruncated report with per-packet timeline (`--full`) | Done |
+| Request/response pairing per TCP connection | whether a device *accepted* a write (frame 139 of `modbus_test.pcap` switched a coil off); broadcast writes without the unit-0 false positive |
+| Per-site write policy file | allowed addresses and value ranges per writer, to catch an attacker on an allowed address |
+| Modbus unit-id sweep detection | device discovery behind a gateway |
+| DNP3, S7comm, EtherNet/IP parsing | the same parse → facts → detectors pipeline for other OT protocols |
+| Vendor commands (Schneider UMAS, FC 90) | PLC stop, start and program download |
+| Time windows for the detectors | telling a sweep in 82 seconds from the same codes used over a month |
+| DNS tunneling entropy scoring | a third signal on top of label length and name count |
+| TLS JA3 fingerprinting, beaconing / C2 interval analysis | generic threat hunting beyond reconnaissance |
 
-Phase 2 — OT/ICS protocols, the actual goal of this project:
-
-| Feature | Status |
-|---|---|
-| Modbus/TCP detection + MBAP header parsing | Done |
-| Modbus function-code sweep detection | Done |
-| Modbus dangerous-command detection (writes + state-changing diagnostics) | Done |
-| Unauthorized Modbus write detection (`--allow-writer`) | Done |
-| Per-site write policy: allowed addresses and value ranges per writer | Planned |
-| Unauthorized Modbus master detection (`--allow-master`) | Done |
-| Modbus unit-id sweep detection (device discovery behind a gateway) | Planned |
-| DNP3 / S7comm parsing | Planned |
-
-Phase 3 — later, no timeline:
-
-| Feature | Status |
-|---|---|
-| DNS tunneling: entropy scoring on top of the current thresholds | Planned |
-| TLS JA3 fingerprinting | Planned |
-| Beaconing / C2 interval analysis | Planned |
-| Real-time capture | Future |
-| Web dashboard | Future |
-| ML-based anomaly detection | Future |
+Real-time capture, a web dashboard and ML-based anomaly detection are deliberately not on
+this list: they would turn a script you run against a capture into a monitoring product,
+which is what this tool is not trying to be.
 
 ## Project structure
 
@@ -727,7 +720,7 @@ wrong first.
 
 ### Machine learning inside the tool
 
-ML-based anomaly detection sits in Phase 3 of the roadmap, deliberately last.
+ML-based anomaly detection is deliberately not part of this project.
 
 Detection here is deterministic and rule-based, and that is a design decision
 rather than a limitation to be outgrown. An alert from this tool has to say which
@@ -743,8 +736,8 @@ capture that already contains the intrusion teaches the model that the intrusion
 normal. Getting that right needs known-clean reference traffic, which is exactly
 what an incident responder arriving at an unfamiliar site does not have.
 
-So: explicit rules first, tested and explainable. Statistical baselining later, on
-top of them, and never as a replacement for them.
+So: explicit rules, tested and explainable. If statistical baselining is ever added,
+it belongs on top of them, never as a replacement for them.
 
 ## Use cases
 
