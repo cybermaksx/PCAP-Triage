@@ -26,6 +26,7 @@ from detectors import (
     detect_modbus_dangerous_command,
     detect_modbus_fc_sweep,
     detect_modbus_unauthorized_master,
+    detect_modbus_unauthorized_write,
     detect_null_scan,
     detect_syn_scan,
     detect_xmas_scan,
@@ -758,3 +759,96 @@ def test_rejected_write_only_for_guessing_exceptions(code, flagged):
     assert ('rejected_write' in found) is flagged
     if flagged:
         assert found['rejected_write']['source'] == '10.0.0.5'   # the master, not the device
+
+
+# ======================================================================
+# Modbus: unauthorized write
+# ======================================================================
+
+def test_unauthorized_write_silent_without_an_allowlist():
+    ctx = make_context()
+    ctx['modbus']['masters']['10.0.0.5'] = _master(writes=3)
+
+    assert ctx['config']['modbus_writers'] is None
+    assert detect_modbus_unauthorized_write(ctx) == []
+
+
+def test_unauthorized_write_reported():
+    ctx = make_context()
+    ctx['config']['modbus_writers'] = _allow('10.0.0.1')
+    ctx['modbus']['masters']['10.0.0.5'] = _master(writes=3)
+
+    findings = detect_modbus_unauthorized_write(ctx)
+
+    assert len(findings) == 1
+    assert findings[0]['type'] == 'MODBUS_UNAUTHORIZED_WRITE'
+    assert findings[0]['severity'] == 'HIGH'
+    assert findings[0]['count'] == 3
+
+
+def test_allowed_writer_and_network_are_not_reported():
+    ctx = make_context()
+    ctx['config']['modbus_writers'] = _allow('10.0.0.5', '10.0.1.0/24')
+    ctx['modbus']['masters']['10.0.0.5'] = _master(writes=3)
+    ctx['modbus']['masters']['10.0.1.7'] = _master(writes=3)
+
+    assert detect_modbus_unauthorized_write(ctx) == []
+
+
+def test_reading_master_is_not_a_writer_problem():
+    """A master with no writes is the master allowlist's business, not this one's."""
+    ctx = make_context()
+    ctx['config']['modbus_writers'] = _allow('10.0.0.1')
+    ctx['modbus']['masters']['10.0.0.5'] = _master(writes=0)
+
+    assert detect_modbus_unauthorized_write(ctx) == []
+
+
+def test_malformed_writes_count_as_writes():
+    """The attempt is the fact, parsed or not."""
+    ctx = make_context()
+    ctx['config']['modbus_writers'] = _allow('10.0.0.1')
+    master = _master()
+    master['writes'] = [_write(malformed=True)]
+    ctx['modbus']['masters']['10.0.0.5'] = master
+
+    finding = detect_modbus_unauthorized_write(ctx)[0]
+
+    assert finding['timeline'][0]['detail'] == 'malformed'
+
+
+@pytest.mark.parametrize("write, detail", [
+    (_write(fc=5, address=2, value=0x0000), 'coil 2 OFF'),
+    (_write(fc=5, address=2, value=0xFF00), 'coil 2 ON'),
+    (_write(fc=5, address=2, value=0x1234), 'coil 2 0x1234'),
+    (_write(fc=6, address=500, value=80), 'reg 500 = 80'),
+    (_write(fc=15, address=0, quantity=10, value=None), 'coil 0+10'),
+    (_write(fc=16, address=100, quantity=2, value=None), 'reg 100+2'),
+])
+def test_unauthorized_write_timeline_speaks_plant(write, detail):
+    ctx = make_context()
+    ctx['config']['modbus_writers'] = _allow('10.0.0.1')
+    master = _master()
+    master['writes'] = [write]
+    ctx['modbus']['masters']['10.0.0.5'] = master
+
+    assert detect_modbus_unauthorized_write(ctx)[0]['timeline'][0]['detail'] == detail
+
+
+def test_allowed_writer_is_also_an_allowed_master():
+    """Listed only in --allow-writer, yet not reported by the master check."""
+    ctx = make_context()
+    ctx['config']['modbus_masters'] = _allow('10.0.0.1')
+    ctx['config']['modbus_writers'] = _allow('10.0.0.5')
+    ctx['modbus']['masters']['10.0.0.5'] = _master(writes=3)
+
+    assert detect_modbus_unauthorized_master(ctx) == []
+
+
+def test_writer_list_alone_does_not_switch_on_the_master_check():
+    """--allow-writer without --allow-master: masters stay unchecked."""
+    ctx = make_context()
+    ctx['config']['modbus_writers'] = _allow('10.0.0.1')
+    ctx['modbus']['masters']['10.0.0.5'] = _master(writes=0)
+
+    assert detect_modbus_unauthorized_master(ctx) == []

@@ -253,7 +253,9 @@ def test_modbus_block_says_whether_masters_were_checked(capsys, modbus_ctx):
     """An empty FINDINGS block must not read as "all masters are fine"."""
     report.print_stats(modbus_ctx)
 
-    assert 'not checked against an allowlist' in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert 'masters not checked against an allowlist' in out
+    assert 'writers not checked against an allowlist' in out
 
 
 def test_modbus_json_records_the_allowlist(capsys):
@@ -298,3 +300,14 @@ def test_timeline_detail_is_shown(capsys):
     report.print_findings([finding])
 
     assert 'FC 8 sub 4' in capsys.readouterr().out
+
+
+def test_modbus_json_records_the_writer_list(capsys):
+    ctx = make_context()
+    ctx['config']['modbus_writers'] = [ipaddress.ip_network('10.1.1.234/32')]
+
+    report.print_json(ctx, [], 'x.pcap')
+    data = json.loads(capsys.readouterr().out)
+
+    assert data['modbus']['allowed_writers'] == ['10.1.1.234/32']
+    assert data['modbus']['allowed_masters'] is None

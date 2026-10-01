@@ -50,3 +50,14 @@ def test_allow_master_rejects_garbage_with_a_clean_exit(capsys):
 
     assert exit_info.value.code == 2
     assert "not an IP address or network: '10.1.1.x'" in capsys.readouterr().err
+
+
+def test_allow_writer_parses_like_allow_master():
+    args = parse_arg(['x.pcap', '--allow-writer', '10.1.1.234,10.0.0.0/24'])
+
+    assert args.allow_writer == _nets('10.1.1.234/32', '10.0.0.0/24')
+    assert args.allow_master is None          # the flags are separate
+
+
+def test_allow_writer_defaults_to_none():
+    assert parse_arg(['x.pcap']).allow_writer is None

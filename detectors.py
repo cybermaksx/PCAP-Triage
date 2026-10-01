@@ -271,6 +271,17 @@ def detect_dns_tunnel(ctx,
     return found_threats
 
 
+def _in_networks(ip, networks):
+    """Is this address inside any of these networks?
+
+    'address in network' is False, not an error, when the two are different
+    IP versions - an IPv6 master against an IPv4 allowlist simply does not
+    match, and is reported.
+    """
+    address = ipaddress.ip_address(ip)
+    return any(address in network for network in networks)
+
+
 def detect_modbus_unauthorized_master(ctx):
     """Report every IP that sent Modbus requests without being allowed to.
 
@@ -291,15 +302,15 @@ def detect_modbus_unauthorized_master(ctx):
     if allowed is None:
         return []
 
+    # A machine allowed to write is obviously allowed to talk. Without this
+    # the SCADA server would have to be listed in both flags, and forgetting
+    # one would report it as an intruder.
+    allowed = allowed + (ctx['config']['modbus_writers'] or [])
+
     found_threats = []
 
     for ip, master in ctx['modbus']['masters'].items():
-        address = ipaddress.ip_address(ip)
-
-        # 'address in network' is False, not an error, when the two are
-        # different IP versions - an IPv6 master against an IPv4 allowlist
-        # simply does not match, and is reported.
-        if any(address in network for network in allowed):
+        if _in_networks(ip, allowed):
             continue
 
         targets = ', '.join(sorted(master['slaves']))
@@ -403,6 +414,80 @@ def detect_modbus_fc_sweep(ctx, threshold=MODBUS_FC_SWEEP_THRESHOLD):
         })
 
     return found_threats
+
+
+def detect_modbus_unauthorized_write(ctx):
+    """Report every master that wrote without being allowed to.
+
+    The site knowledge the dangerous-command detector does not have. On a
+    real plant only a few machines change things - the SCADA server, an
+    engineering workstation - while historians and monitoring HMIs only
+    read. A write from one of those is an incident even when the address
+    and value look ordinary: 10.0.0.9 switching two coils off in
+    modbus_test.pcap is invisible to every other detector.
+
+    Every write request counts, malformed ones included: an attempt to
+    write is the fact, whether or not the device managed to parse it.
+
+    Silent without --allow-writer, for the same reason as the master
+    allowlist: guessing who may write would flag the SCADA server first.
+    """
+    allowed = ctx['config']['modbus_writers']
+    if allowed is None:
+        return []
+
+    found_threats = []
+
+    for ip, master in ctx['modbus']['masters'].items():
+        writes = master['writes']
+        if not writes or _in_networks(ip, allowed):
+            continue
+
+        targets = sorted({w['slave'] for w in writes})
+
+        found_threats.append({
+            'type': 'MODBUS_UNAUTHORIZED_WRITE',
+            'severity': 'HIGH',
+            'source': ip,
+            'description': (f'{ip} is not an allowed writer but sent '
+                            f'{len(writes)} write requests to {", ".join(targets)}'),
+            'targets': targets,
+            'count': len(writes),
+            'start': writes[0]['time'],
+            'end': writes[-1]['time'],
+            'first_frame': writes[0]['frame'],
+            'last_frame': writes[-1]['frame'],
+            'duration': writes[-1]['time'] - writes[0]['time'],
+            # Which address got which value - the part the analyst has to
+            # check against the plant: what does coil 2 switch?
+            'timeline': [{'fc': w['fc'], 'detail': _write_detail(w),
+                          'time': w['time'], 'frame': w['frame']}
+                         for w in writes],
+        })
+
+    return found_threats
+
+
+def _write_detail(write):
+    """One timeline step of a write, in the words of the plant:
+
+        'coil 2 OFF'      FC 5
+        'reg 500 = 80'    FC 6
+        'coil 0+10'       FC 15 - ten coils from 0
+        'reg 100+2'       FC 16, 22, 23
+        'malformed'
+    """
+    if write['malformed']:
+        return 'malformed'
+
+    kind = 'coil' if write['space'] == 'coil' else 'reg'
+
+    if write['value'] is None:
+        return f"{kind} {write['address']}+{write['quantity']}"
+    if kind == 'coil':
+        state = {COIL_ON: 'ON', COIL_OFF: 'OFF'}.get(write['value'], f"0x{write['value']:04X}")
+        return f"coil {write['address']} {state}"
+    return f"reg {write['address']} = {write['value']}"
 
 
 # Each reason the dangerous-command detector can report, with its severity
@@ -567,6 +652,7 @@ DETECTORS = [
     detect_mitm_attack,
     detect_dns_tunnel,
     detect_modbus_unauthorized_master,
+    detect_modbus_unauthorized_write,
     detect_modbus_fc_sweep,
     detect_modbus_dangerous_command,
 ]

@@ -98,6 +98,12 @@ def parse_arg(argv=None):
                         metavar="IP[/NET][,...]",
                         help="Modbus masters that are allowed to send requests; any other "
                              "IP sending to port 502 is reported. Repeatable, accepts CIDR")
+    # Same format and the same None-vs-empty rule as --allow-master.
+    parser.add_argument("--allow-writer", type=_networks, action="extend",
+                        metavar="IP[/NET][,...]",
+                        help="Modbus masters that are allowed to WRITE (FC 5/6/15/16/22/23); "
+                             "a write from any other master is reported. Also counts as "
+                             "--allow-master. Repeatable, accepts CIDR")
     return parser.parse_args(argv)
 
 
@@ -140,6 +146,7 @@ def main():
         # What the analyst knows about the site, not something the packets
         # say - see the note on 'config' in context.make_context().
         ctx['config']['modbus_masters'] = args.allow_master
+        ctx['config']['modbus_writers'] = args.allow_writer
 
         with PcapReader(args.pcap_file) as packets:
             for index, packet in enumerate(packets):

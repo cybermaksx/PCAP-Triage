@@ -195,9 +195,12 @@ def make_context():
         #   modbus_masters -- list of ipaddress networks allowed to act as
         #                     Modbus masters, or None when no allowlist was
         #                     given (NOT the same as "nobody is allowed")
+        #   modbus_writers -- the same, for masters allowed to WRITE. A
+        #                     writer is implicitly an allowed master too.
         # ------------------------------------------------------------------
         'config': {
             'modbus_masters': None,
+            'modbus_writers': None,
         },
     }
 

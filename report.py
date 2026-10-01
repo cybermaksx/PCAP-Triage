@@ -433,7 +433,7 @@ def print_stats(ctx, source=None, full=False):
     # the common case, and an empty block in every report is noise.
     modbus = ctx['modbus']
     if stats['modbus'] or modbus['malformed']:
-        _print_modbus(modbus, full, ctx['config']['modbus_masters'])
+        _print_modbus(modbus, full, ctx['config'])
 
 
 def _fc_name(fc):
@@ -448,7 +448,7 @@ def _exception_sort_key(code):
     return (code is None, code or 0)
 
 
-def _print_modbus(modbus, full=False, allowed=None):
+def _print_modbus(modbus, full=False, config=None):
     """The MODBUS block: who gives orders, which ones, and how devices answer."""
 
     masters = modbus['masters']
@@ -477,10 +477,14 @@ def _print_modbus(modbus, full=False, allowed=None):
     # Say whether the masters were checked at all. Without this line an
     # empty FINDINGS block reads as "all masters are fine", when it really
     # means "nobody was asked".
-    if allowed is None:
-        print(_c("    not checked against an allowlist - pass --allow-master", _DIM))
-    else:
-        print(_c(f"    allowed: {', '.join(map(str, allowed)) or 'none'}", _DIM))
+    config = config or {}
+    for label, flag, key in (("masters", "--allow-master", 'modbus_masters'),
+                             ("writers", "--allow-writer", 'modbus_writers')):
+        allowed = config.get(key)
+        if allowed is None:
+            print(_c(f"    {label} not checked against an allowlist - pass {flag}", _DIM))
+        else:
+            print(_c(f"    allowed {label}: {', '.join(map(str, allowed)) or 'none'}", _DIM))
     for ip in _sort_ips(masters):
         m = masters[ip]
         targets = ', '.join(f"{slave} [{', '.join(map(str, sorted(units)))}]"
@@ -602,9 +606,11 @@ def print_findings(findings, full=False):
                 _print_timeline(timeline)
             else:
                 # As many steps as fit on one line, up to MAX_ORDER_SHOWN.
-                # 13 = indent + label column, 26 = room for the
-                # "… (+65520)  [randomised]" tail.
-                budget = _width() - 13 - 26
+                # 13 = indent + label column, then room for the tail:
+                # "… (+65520)" is 12, "  [randomised]" 14 more - only
+                # reserved when the finding carries that tag.
+                tail = 12 + (14 if 'sequential' in threat else 0)
+                budget = _width() - 13 - tail
                 steps = []
                 for entry in timeline[:MAX_ORDER_SHOWN]:
                     if steps and len(' → '.join(steps + [_step(entry)])) > budget:
@@ -686,14 +692,14 @@ def print_json(ctx, findings, source):
             "first_ts": stats['first_ts'],
             "last_ts": stats['last_ts'],
         },
-        "modbus": _modbus_json(ctx['modbus'], ctx['config']['modbus_masters']),
+        "modbus": _modbus_json(ctx['modbus'], ctx['config']),
         "findings": findings,
     }
 
     print(json.dumps(data, indent=2))
 
 
-def _modbus_json(modbus, allowed=None):
+def _modbus_json(modbus, config=None):
     """ctx['modbus'] in a shape json.dumps() accepts and a consumer can diff.
 
     Sets become sorted lists, and int-keyed dicts become lists of objects:
@@ -735,8 +741,14 @@ def _modbus_json(modbus, allowed=None):
     return {
         # null = no allowlist was given, [] = an empty one. The findings
         # only make sense next to the list that produced them.
-        "allowed_masters": None if allowed is None else [str(n) for n in allowed],
+        "allowed_masters": _networks_json((config or {}).get('modbus_masters')),
+        "allowed_writers": _networks_json((config or {}).get('modbus_writers')),
         "masters": masters,
         "slaves": slaves,
         "malformed": modbus['malformed'],
     }
+
+
+def _networks_json(networks):
+    """None stays null (flag not given); a list becomes CIDR strings."""
+    return None if networks is None else [str(n) for n in networks]

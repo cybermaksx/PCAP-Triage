@@ -303,8 +303,9 @@ def test_no_modbus_in_a_capture_without_it(test_ctx):
 
 def test_config_starts_empty_and_feed_leaves_it_alone(modbus_ctx):
     """'config' is filled by main.py, never by the packets."""
-    assert make_context()['config'] == {'modbus_masters': None}
-    assert modbus_ctx['config'] == {'modbus_masters': None}
+    empty = {'modbus_masters': None, 'modbus_writers': None}
+    assert make_context()['config'] == empty
+    assert modbus_ctx['config'] == empty
 
 
 def test_unauthorized_masters_on_modbus_test(modbus_ctx):
@@ -318,6 +319,7 @@ def test_unauthorized_masters_on_modbus_test(modbus_ctx):
 
     ctx = dict(modbus_ctx, config={
         'modbus_masters': [ipaddress.ip_network('10.1.1.234/32')],
+        'modbus_writers': None,
     })
 
     findings = detect_modbus_unauthorized_master(ctx)
@@ -387,3 +389,25 @@ def test_dangerous_commands_on_modbus_test(modbus_ctx):
     }
     # Not in the dict, on purpose: 10.1.1.234 (SCADA, 20 normal writes) and
     # 10.0.0.9 (three ordinary, accepted writes).
+
+
+def test_unauthorized_writes_on_modbus_test(modbus_ctx):
+    """Allow the SCADA master to write: 10.0.0.9 and the sweep are left.
+
+    10.0.0.57 sends no write at all - its listen-only attack is the
+    dangerous-command detector's catch, not this one's.
+    """
+    from detectors import detect_modbus_unauthorized_write
+    import ipaddress
+
+    ctx = dict(modbus_ctx, config={
+        'modbus_masters': None,
+        'modbus_writers': [ipaddress.ip_network('10.1.1.234/32')],
+    })
+
+    findings = {f['source']: f for f in detect_modbus_unauthorized_write(ctx)}
+
+    assert set(findings) == {'10.0.0.9', '192.168.66.235'}
+    assert [s['detail'] for s in findings['10.0.0.9']['timeline']] == [
+        'coil 2 OFF', 'coil 1 OFF', 'reg 5 = 11',
+    ]

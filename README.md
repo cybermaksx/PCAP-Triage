@@ -11,8 +11,8 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 > **Phase 2 has started:** Modbus/TCP is parsed and summarised — masters, slaves,
 > function codes, writes, exceptions and malformed traffic on port 502. Three detectors
 > sit on top: a function-code sweep, dangerous commands (denial-of-service diagnostics,
-> malformed, rejected, broadcast and mass writes), and any master not on an allowlist
-> given with `--allow-master`. See [Roadmap](#roadmap)
+> malformed, rejected, broadcast and mass writes), and masters or writers missing from
+> the allowlists given with `--allow-master` and `--allow-writer`. See [Roadmap](#roadmap)
 > for the honest state of things.
 
 ## Features
@@ -60,6 +60,11 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   give orders (`--allow-master`, IPs or CIDR networks); any other IP sending requests
   to port 502 is reported, with its targets, its writes and the function codes it used
   in order. Without the flag the check is skipped and the report says so
+- Unauthorized Modbus write detection — the same for writes (`--allow-writer`): on a
+  plant only a few machines may change things, while historians and monitoring HMIs
+  only read. A write from anyone else is reported even when its address and value look
+  ordinary, with each step spelled out as `coil 2 OFF` or `reg 500 = 80`. An allowed
+  writer is implicitly an allowed master
 - Full mode (`--full`) — lifts every truncation limit and prints a per-packet timeline
   for each finding
 - Detector registry — new detections plug in without touching the pipeline
@@ -76,7 +81,7 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   with a non-zero exit code, so a wrapping script can tell a failed run from an
   empty one
 - CLI interface via `argparse`
-- pytest suite — 284 tests over the collector, the Modbus parser, the detectors, the
+- pytest suite — 301 tests over the collector, the Modbus parser, the detectors, the
   registry contract, the command line and all output modes. Modbus expectations are taken from tshark,
   not from the code under test
 
@@ -103,9 +108,9 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   gateway) is a different pattern and is not detected
 - Dangerous-command detection does not judge ordinary writes. A master that writes
   valid values to ordinary addresses — `10.0.0.9` switching two coils off in
-  `modbus_test.pcap` — is not reported unless it is missing from `--allow-master`.
-  Which machine may write, which addresses and which value ranges are normal is site
-  knowledge the tool does not have
+  `modbus_test.pcap` — is reported only when it is missing from `--allow-master` or
+  `--allow-writer`. Which addresses and value ranges are normal for an allowed writer
+  is site knowledge the tool cannot take yet
 - Writes to unit 0 are reported as broadcast, but some Modbus/TCP devices take unit 0
   as their own address and answer it. Telling the two apart needs request/response
   pairing, so the finding asks the analyst to check
@@ -172,7 +177,8 @@ pip install -r requirements-dev.txt
 ## Usage
 
 ```bash
-python main.py <capture.pcap> [--json] [--full] [--allow-master IP[/NET][,...]]
+python main.py <capture.pcap> [--json] [--full]
+               [--allow-master IP[/NET][,...]] [--allow-writer IP[/NET][,...]]
 ```
 
 Example:
@@ -410,6 +416,39 @@ never mistaken for "all masters are fine". The JSON records the allowlist that w
 (`modbus.allowed_masters`, `null` when none was given), so a saved result can be read
 next to the list that produced it.
 
+### Allowed Modbus writers
+
+Reading and writing are different permissions on a real plant: the historian and the
+monitoring HMIs read all day and never write, and a write from one of them is an
+incident however ordinary it looks. `--allow-writer` takes the same format as
+`--allow-master` and reports every master outside it that sent a write request — FC 5,
+6, 15, 16, 22 or 23, malformed ones included, since the attempt is the fact:
+
+```bash
+python main.py pcaps/modbus_test.pcap --allow-writer 10.1.1.234
+```
+
+```
+    ▸ MODBUS_UNAUTHORIZED_WRITE  HIGH  from 10.0.0.9
+      10.0.0.9 is not an allowed writer but sent 3 write requests to 10.0.0.3
+      start  2004-08-26 12:13:52.259 UTC  (frame 60)
+      end    2004-08-26 12:14:39.997 UTC  (frame 66)
+      span   47.739 s
+      order  FC 5 coil 2 OFF → FC 5 coil 1 OFF → FC 6 reg 5 = 11
+```
+
+That is the one finding no other detector produces: three valid writes, accepted by
+the device, invisible without knowing who was supposed to make them.
+
+A writer is implicitly an allowed master, so the SCADA server does not have to be
+listed twice. The reverse does not hold, and `--allow-writer` alone does not switch on
+the master check — the two lists answer different questions:
+
+```bash
+--allow-master 10.1.1.0/24 --allow-writer 10.1.1.234
+#   the whole control subnet may read; only the SCADA server may write
+```
+
 ### Full output
 
 ```bash
@@ -532,8 +571,8 @@ lets the same command feed a pipe instead.
 ### Running the tests
 
 ```bash
-python -m pytest -m "not slow"    # 279 tests, ~1 s
-python -m pytest                  # 284 tests, ~45 s
+python -m pytest -m "not slow"    # 296 tests, ~1 s
+python -m pytest                  # 301 tests, ~45 s
 ```
 
 The `-m` matters: a bare `pytest` does not put the project directory on the module
@@ -576,7 +615,8 @@ Phase 2 — OT/ICS protocols, the actual goal of this project:
 | Modbus/TCP detection + MBAP header parsing | Done |
 | Modbus function-code sweep detection | Done |
 | Modbus dangerous-command detection (writes + state-changing diagnostics) | Done |
-| Per-site write policy: allowed writers, addresses, value ranges | Planned |
+| Unauthorized Modbus write detection (`--allow-writer`) | Done |
+| Per-site write policy: allowed addresses and value ranges per writer | Planned |
 | Unauthorized Modbus master detection (`--allow-master`) | Done |
 | Modbus unit-id sweep detection (device discovery behind a gateway) | Planned |
 | DNP3 / S7comm parsing | Planned |
@@ -606,7 +646,7 @@ PCAP-Triage/
 │   ├── test_context.py       # Counter accuracy and the layer-coverage invariant
 │   ├── test_detectors.py     # Thresholds, finding schema, registry contract
 │   ├── test_modbus.py        # MBAP, write and diagnostic parsers on hand-built bytes
-│   ├── test_main.py          # Command-line parsing (--allow-master)
+│   ├── test_main.py          # Command-line parsing (--allow-master, --allow-writer)
 │   └── test_report.py        # JSON validity and which stream each helper writes to
 ├── pcaps/                    # Sample captures
 │   ├── test.pcapng           # 40 packets, mixed IPv4/IPv6, no scan
