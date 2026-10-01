@@ -25,9 +25,19 @@ Context instead of reading the packets.
 This file must never import detectors.py or report.py. Dependencies only flow
 one way:  main.py -> context.py / detectors.py / report.py.
 Importing in both directions would create a circular import and crash Python.
+
+It MAY import protocol modules such as modbus.py: those only describe what a
+message looks like, and import nothing from the project themselves.
 """
 
 from scapy.all import IP, TCP, UDP, ICMP, ARP, DNS, IPv6, UDPerror, DNSQR
+
+# Modbus/TCP knowledge lives in its own module. parse_mbap() turns a TCP
+# payload into fields (or None if it is not Modbus); MODBUS_PORT tells feed()
+# which packets to hand it; WRITE_FCS is what the write detector will need.
+# NOTE: imported but not called yet - feed() starts using it once
+# parse_mbap() is implemented.
+from modbus import parse_mbap, MODBUS_PORT, WRITE_FCS
 
 
 def make_context():
