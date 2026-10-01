@@ -70,3 +70,8 @@ def finscan_ctx():
 @pytest.fixture(scope="session")
 def synscan_ctx():
     return build_context("synscan.pcapng")
+
+
+@pytest.fixture(scope="session")
+def modbus_ctx():
+    return build_context("modbus_test.pcap")

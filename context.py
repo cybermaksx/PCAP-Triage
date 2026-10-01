@@ -30,13 +30,12 @@ It MAY import protocol modules such as modbus.py: those only describe what a
 message looks like, and import nothing from the project themselves.
 """
 
-from scapy.all import IP, TCP, UDP, ICMP, ARP, DNS, IPv6, UDPerror, DNSQR
+from scapy.all import IP, TCP, UDP, ICMP, ARP, DNS, IPv6, UDPerror, DNSQR, Padding
 
 # Modbus/TCP knowledge lives in its own module. parse_mbap() turns a TCP
 # payload into fields (or None if it is not Modbus); MODBUS_PORT tells feed()
-# which packets to hand it; WRITE_FCS is what the write detector will need.
-# NOTE: imported but not called yet - feed() starts using it once
-# parse_mbap() is implemented.
+# which packets to hand it; WRITE_FCS marks the requests worth remembering
+# one by one.
 from modbus import parse_mbap, MODBUS_PORT, WRITE_FCS
 
 
@@ -87,6 +86,7 @@ def make_context():
         'icmp': 0,
         'arp': 0,
         'dns': 0,
+        'modbus': 0,          # well-formed Modbus/TCP messages, both directions
         'ipv4': 0,
         'ipv6': 0,
         'other': 0,
@@ -119,6 +119,44 @@ def make_context():
     xmas_scan_ports = {}
     arp_table = {}      # ip -> {mac: (ts, frame)}, first time each MAC claimed it
     dns_domains = {}
+
+    # ------------------------------------------------------------------
+    # Modbus/TCP. Split by ROLE, because the two sides of the protocol
+    # answer different questions:
+    #
+    #   masters   -- who is giving orders: which devices, which function
+    #                codes, which writes. Keyed by the IP that sends
+    #                requests TO port 502.
+    #   slaves    -- how the devices answer: how often, and with which
+    #                exceptions. Keyed by the IP that answers FROM 502.
+    #   malformed -- traffic on port 502 that is not valid Modbus. Kept,
+    #                not dropped: scanners send garbage on purpose, and a
+    #                device answering in a different protocol is a fact.
+    #
+    # Master record:
+    #   {
+    #     'requests': 407,
+    #     'first_ts', 'last_ts', 'first_frame', 'last_frame',
+    #     'slaves': {'10.10.5.85': {255}},       # slave ip -> unit ids used
+    #     'function_codes': {6: (ts, frame), 4: (ts, frame), ...},
+    #                    # first use of each FC, in order - same idea as
+    #                    # 'ports' in a scan record
+    #     'fc_counts': {4: 317, 3: 73, 6: 20},
+    #     'writes': [{'slave', 'unit', 'fc', 'time', 'frame'}, ...],
+    #   }
+    #
+    # Slave record:
+    #   {
+    #     'responses': 563,
+    #     'units': {255},
+    #     'exceptions': {1: 104, 3: 18},         # exception code -> count
+    #   }
+    # ------------------------------------------------------------------
+    modbus = {
+        'masters': {},
+        'slaves': {},
+        'malformed': [],      # [{'src', 'dst', 'time', 'frame'}, ...]
+    }
     return {
         'stats': stats,
         'ip_ports': ip_ports,
@@ -128,6 +166,7 @@ def make_context():
         'xmas_scan_ports': xmas_scan_ports,
         'arp_table': arp_table,
         'dns_domains': dns_domains,
+        'modbus': modbus,
     }
 
 
@@ -154,6 +193,98 @@ def _record_probe(ctx, key, ip, port, ts, frame):
     # setdefault, not assignment: a retransmitted SYN to port 22 must not
     # move 22 to the end of the order or overwrite when it was first hit.
     scan['ports'].setdefault(port, (ts, frame))
+
+
+def _tcp_payload(packet):
+    """The bytes a TCP segment actually carries, without Ethernet padding.
+
+    An Ethernet frame is at least 60 bytes, so a short segment gets zero
+    bytes appended by the network card. scapy splits those off as a
+    Padding layer - but bytes(packet[TCP].payload) still includes it. A
+    bare ACK would then look like a 6-byte payload, and every ACK on port
+    502 would be counted as malformed Modbus.
+    """
+    raw = bytes(packet[TCP].payload)
+    if Padding in packet:
+        raw = raw[:len(raw) - len(bytes(packet[Padding]))]
+    return raw
+
+
+def _record_modbus(ctx, packet, ts, frame):
+    """Write down one TCP segment to or from port 502.
+
+    Called only for segments that carry data - bare ACKs and handshakes
+    say nothing about Modbus.
+    """
+    payload = _tcp_payload(packet)
+    if not payload:
+        return
+
+    ip_layer = packet[IP] if IP in packet else packet[IPv6]
+    src, dst = ip_layer.src, ip_layer.dst
+    modbus = ctx['modbus']
+
+    message = parse_mbap(payload)
+    if message is None:
+        modbus['malformed'].append({'src': src, 'dst': dst, 'time': ts, 'frame': frame})
+        return
+
+    ctx['stats']['modbus'] += 1
+
+    # Direction decides the role - the message itself does not say.
+    # dport is checked first: if BOTH ports are 502 (two devices talking
+    # to each other), the sender is treated as the master.
+    if packet[TCP].dport == MODBUS_PORT:
+        unit = message['unit_id']
+
+        # parse_mbap() strips the exception bit, which is right for a
+        # response. A REQUEST with the bit set is not an exception, it is
+        # a function code above 127 - nonsense, and worth keeping as such
+        # rather than folding it into the legitimate code below it.
+        fc = message['function_code']
+        if message['is_exception']:
+            fc |= 0x80
+
+        master = modbus['masters'].setdefault(src, {
+            'requests': 0,
+            'first_ts': ts, 'last_ts': ts,
+            'first_frame': frame, 'last_frame': frame,
+            'slaves': {},
+            'function_codes': {},
+            'fc_counts': {},
+            'writes': [],
+        })
+
+        master['requests'] += 1
+        if ts < master['first_ts']:
+            master['first_ts'], master['first_frame'] = ts, frame
+        if ts >= master['last_ts']:
+            master['last_ts'], master['last_frame'] = ts, frame
+
+        master['slaves'].setdefault(dst, set()).add(unit)
+        master['function_codes'].setdefault(fc, (ts, frame))
+        master['fc_counts'][fc] = master['fc_counts'].get(fc, 0) + 1
+
+        if fc in WRITE_FCS:
+            master['writes'].append({
+                'slave': dst, 'unit': unit, 'fc': fc,
+                'time': ts, 'frame': frame,
+            })
+
+    else:
+        slave = modbus['slaves'].setdefault(src, {
+            'responses': 0,
+            'units': set(),
+            'exceptions': {},
+        })
+
+        slave['responses'] += 1
+        slave['units'].add(message['unit_id'])
+
+        if message['is_exception']:
+            # None when the response was cut off before the code byte.
+            code = message['exception_code']
+            slave['exceptions'][code] = slave['exceptions'].get(code, 0) + 1
 
 
 def feed(ctx, packet, index):
@@ -412,3 +543,15 @@ def feed(ctx, packet, index):
             # exactly the case this detector is for. See ROADMAP.
             bucket['names'].add(qname)
             bucket['sources'].add(src_ip)
+
+
+
+    # ------------------------------------------------------------------
+    # Modbus/TCP. Only port 502 for now: the parser itself does not care
+    # about ports, but deciding that an arbitrary TCP stream is Modbus
+    # by content alone would turn every 8 bytes of noise that happen to
+    # start with protocol id 0 into a "message". See ROADMAP.
+    # ------------------------------------------------------------------
+    if (TCP in packet and (IP in packet or IPv6 in packet)
+            and MODBUS_PORT in (packet[TCP].sport, packet[TCP].dport)):
+        _record_modbus(ctx, packet, ts, frame)

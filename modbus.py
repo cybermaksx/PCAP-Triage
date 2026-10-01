@@ -155,74 +155,41 @@ def parse_mbap(payload):
     at all (frames 91-113).
     """
 
-    # ------------------------------------------------------------------
-    # STEP 1 - is there enough data for a header and a function code?
-    #
-    # Check BEFORE touching any offsets. Unpacking 7 bytes out of a
-    # 5-byte payload raises struct.error.
-    #
-    # TODO: if the payload is shorter than MIN_MESSAGE_LEN, return None
-    # ------------------------------------------------------------------
 
-    # ------------------------------------------------------------------
-    # STEP 2 - unpack the MBAP header.
-    #
-    # One struct.unpack call reads all four fields:
-    #
-    #     '>'  big-endian
-    #     'H'  unsigned 2-byte integer   (transaction id)
-    #     'H'  unsigned 2-byte integer   (protocol id)
-    #     'H'  unsigned 2-byte integer   (length)
-    #     'B'  unsigned 1-byte integer   (unit id)
-    #
-    # TODO: transaction_id, protocol_id, length, unit_id = struct.unpack(...)
-    #       on the first MBAP_HEADER_LEN bytes of the payload
-    # ------------------------------------------------------------------
 
-    # ------------------------------------------------------------------
-    # STEP 3 - validate. This is what separates Modbus from "something on
-    # port 502". Return None if ANY of these fails:
-    #
-    #   a) protocol_id must be 0
-    #   b) length must be within MIN_LENGTH_FIELD..MAX_LENGTH_FIELD
-    #   c) length must agree with the bytes actually present:
-    #          length == len(payload) - 6
-    #      (6, not 7: 'length' counts the unit id byte, which is the 7th
-    #       byte of the header)
-    #
-    # NOTE on (c): one TCP segment can carry SEVERAL Modbus messages back
-    # to back, and one message can be split across two segments. Requiring
-    # an exact match ignores both cases for now - write that down as a
-    # known limitation rather than half-handling it.
-    #
-    # TODO: the three checks
-    # ------------------------------------------------------------------
+    if len(payload) < MIN_MESSAGE_LEN:
+        return None
 
-    # ------------------------------------------------------------------
-    # STEP 4 - function code and exception bit.
-    #
-    # The FC is the byte right after the header: payload[MBAP_HEADER_LEN].
-    # Indexing bytes gives an int directly, no unpack needed.
-    #
-    # If the EXCEPTION_BIT is set:
-    #     is_exception   = True
-    #     function_code  = fc without the bit      (fc & ~EXCEPTION_BIT,
-    #                                               or fc - 0x80)
-    #     exception_code = the next byte, IF it is there - a truncated
-    #                      exception response must not raise IndexError
-    #
-    # Why strip the bit: "FC 6 failed" and "FC 6 succeeded" are both
-    # about FC 6. Counting 0x86 as a separate function code 134 would
-    # split one function across two buckets.
-    #
-    # TODO: fc, is_exception, exception_code
-    # ------------------------------------------------------------------
+    
 
-    # ------------------------------------------------------------------
-    # STEP 5 - build and return the dict described in the docstring.
-    # 'data' is everything after the function code.
-    #
-    # TODO: return {...}
-    # ------------------------------------------------------------------
+    transaction_id, protocol_id, length, unit_id = struct.unpack(
+            '>HHHB', payload[:MBAP_HEADER_LEN])
 
-    raise NotImplementedError("parse_mbap: steps 1-5 above")
+
+    if protocol_id != 0:
+        return None
+
+    if not (MIN_LENGTH_FIELD <= length <= MAX_LENGTH_FIELD):
+            return None
+
+    if length != len(payload) - 6:
+            return None
+    
+    fc = payload[MBAP_HEADER_LEN]
+    is_exception = False
+    exception_code = None
+    
+    if fc & EXCEPTION_BIT:
+        is_exception = True
+        fc = fc & ~EXCEPTION_BIT
+        if len(payload) > MBAP_HEADER_LEN + 1:
+            exception_code = payload[MBAP_HEADER_LEN + 1]
+
+    return {
+            'transaction_id': transaction_id,
+            'unit_id':        unit_id,
+            'function_code':  fc,
+            'is_exception':   is_exception,
+            'exception_code': exception_code,
+            'data':           payload[MBAP_HEADER_LEN + 1:],
+        }

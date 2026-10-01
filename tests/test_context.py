@@ -187,3 +187,112 @@ def test_capture_time_span_recorded(finscan_ctx):
 
     assert stats['first_ts'] is not None
     assert stats['first_ts'] <= stats['last_ts']
+
+
+# ======================================================================
+# Modbus/TCP, on modbus_test.pcap.
+#
+# Every expected number below comes from tshark, not from this code:
+#
+#     tshark -r pcaps/modbus_test.pcap -Y "mbtcp && tcp.dstport==502" ...
+#
+# A test whose expectation was copied from the code's own output would
+# only prove that the code agrees with itself.
+#
+# One deliberate disagreement with tshark: frames 91-109 are counted as
+# Modbus responses here, while tshark shows them as plain "data". Byte
+# for byte they are valid MBAP (exception responses from 10.0.0.8), so
+# the parser is right to accept them.
+# ======================================================================
+
+def test_modbus_requests_per_master(modbus_ctx):
+    masters = modbus_ctx['modbus']['masters']
+
+    assert {ip: m['requests'] for ip, m in masters.items()} == {
+        '10.0.0.57': 12,
+        '10.0.0.9': 6,
+        '10.1.1.234': 407,
+        '192.168.66.235': 141,
+    }
+
+
+def test_modbus_responses_per_slave(modbus_ctx):
+    slaves = modbus_ctx['modbus']['slaves']
+
+    assert {ip: s['responses'] for ip, s in slaves.items()} == {
+        '10.0.0.3': 16,
+        '10.0.0.8': 10,           # frames 91-109, see the note above
+        '166.161.16.230': 140,
+        '10.10.5.85': 407,
+    }
+
+
+def test_modbus_function_code_sweep_is_visible(modbus_ctx):
+    """The 2006 capture: one master, every function code from 0 to 127."""
+    sweep = modbus_ctx['modbus']['masters']['192.168.66.235']
+
+    assert sorted(sweep['function_codes']) == list(range(128))
+
+
+def test_modbus_function_codes_keep_first_use_order(modbus_ctx):
+    """Same contract as a scan record's 'ports': dict order = time order."""
+    sweep = modbus_ctx['modbus']['masters']['192.168.66.235']
+
+    frames = [frame for _, frame in sweep['function_codes'].values()]
+    assert frames == sorted(frames)
+
+
+def test_modbus_writes_collected(modbus_ctx):
+    masters = modbus_ctx['modbus']['masters']
+
+    scada = masters['10.1.1.234']['writes']
+    assert len(scada) == 20
+    assert {w['fc'] for w in scada} == {6}
+    assert scada[0]['frame'] == 472          # the session opens with a write
+
+    assert [w['fc'] for w in masters['10.0.0.9']['writes']] == [5, 5, 6]
+    assert masters['10.0.0.57']['writes'] == []
+
+
+def test_modbus_exceptions_per_slave(modbus_ctx):
+    slaves = modbus_ctx['modbus']['slaves']
+
+    assert slaves['166.161.16.230']['exceptions'] == {1: 104, 2: 8, 3: 18}
+    assert slaves['10.0.0.3']['exceptions'] == {11: 4}
+    assert slaves['10.10.5.85']['exceptions'] == {}
+
+
+def test_modbus_malformed_frames(modbus_ctx):
+    """On port 502, carrying data, and not valid MBAP.
+
+    76, 78: length field 0x8804, far over the 254 limit
+    80, 82: protocol id 0x0010
+    111, 113: length 5 with 8 bytes after the field
+    """
+    frames = [m['frame'] for m in modbus_ctx['modbus']['malformed']]
+
+    assert frames == [76, 78, 80, 82, 111, 113]
+
+
+def test_modbus_every_payload_on_502_is_accounted_for(modbus_ctx):
+    """Parsed or malformed - nothing on port 502 silently disappears.
+
+    1145 = frames on port 502 with tcp.len > 0, counted by tshark. The
+    same kind of invariant as the network-layer sum above.
+    """
+    modbus = modbus_ctx['modbus']
+
+    assert modbus_ctx['stats']['modbus'] + len(modbus['malformed']) == 1145
+
+
+def test_bare_acks_are_not_malformed(modbus_ctx):
+    """Ethernet padding on a short ACK must not look like a payload.
+
+    Frame 77 is a bare ACK from 10.0.0.8 padded to 60 bytes.
+    """
+    assert 77 not in [m['frame'] for m in modbus_ctx['modbus']['malformed']]
+
+
+def test_no_modbus_in_a_capture_without_it(test_ctx):
+    assert test_ctx['stats']['modbus'] == 0
+    assert test_ctx['modbus'] == {'masters': {}, 'slaves': {}, 'malformed': []}

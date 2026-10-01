@@ -209,3 +209,40 @@ def test_full_report_lifts_address_limit(capsys):
 
     assert '10.0.0.33' in out
     assert 'more)' not in out
+
+
+# ======================================================================
+# Modbus block
+# ======================================================================
+
+def test_modbus_block_shown_only_when_there_is_modbus(capsys, modbus_ctx):
+    empty = make_context()
+    empty['stats']['total_packets'] = 1
+
+    report.print_stats(empty)
+    assert 'MODBUS' not in capsys.readouterr().out
+
+    report.print_stats(modbus_ctx)
+    out = capsys.readouterr().out
+    assert 'MODBUS' in out
+    assert 'Illegal Function' in out
+
+
+def test_modbus_writes_listed_only_in_full(capsys, modbus_ctx):
+    report.print_stats(modbus_ctx)
+    assert 'Writes (' not in capsys.readouterr().out
+
+    report.print_stats(modbus_ctx, full=True)
+    assert 'Writes (29)' in capsys.readouterr().out
+
+
+def test_modbus_json_parses_and_keeps_numbers(capsys, modbus_ctx):
+    """Sets and int-keyed dicts are what json.dumps() chokes on or mangles."""
+    report.print_json(modbus_ctx, [], 'modbus_test.pcap')
+
+    data = json.loads(capsys.readouterr().out)
+    masters = {m['ip']: m for m in data['modbus']['masters']}
+
+    assert len(masters['192.168.66.235']['function_codes']) == 128
+    assert masters['10.1.1.234']['slaves'] == [{'ip': '10.10.5.85', 'units': [255]}]
+    assert data['stats']['protocols']['modbus'] == 1139

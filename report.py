@@ -19,9 +19,11 @@ Now the pipeline is:  collect (context.py) -> decide (detectors.py) -> show (her
 The first two stages produce data. Only this stage turns data into text, so
 adding a second output format means adding a function here and nothing else.
 
-This module imports nothing from the project. It is handed finished data and
-formats it - that is all it does. The standard library is fair game; the
-imports below are all it needs.
+This module imports nothing from the analysis stages. It is handed finished
+data and formats it - that is all it does. The one project import is
+modbus.py, for its tables of function and exception NAMES: those are
+reference data, the same kind of thing as a list of well-known ports, and
+keeping a second copy here would let the two drift apart.
 
 HOW THE LAYOUT WORKS
 --------------------
@@ -57,6 +59,8 @@ import sys
 import json
 from datetime import datetime, timezone
 
+from modbus import FUNCTION_NAMES, EXCEPTION_NAMES
+
 # ======================================================================
 # LAYOUT CONSTANTS
 # ======================================================================
@@ -74,6 +78,14 @@ MAX_ADDRESSES_SHOWN = 24
 # The order is the whole point of that line, so it cannot be folded into
 # ranges the way the port list is - it is cut short instead.
 MAX_ORDER_SHOWN = 15
+
+# Modbus function codes listed in the MODBUS block. A function-code sweep
+# uses all 128 of them; the first ten by count are what tells the story.
+MAX_FC_SHOWN = 10
+
+# Frame numbers listed for malformed Modbus. Enough to open a few in
+# Wireshark - the full list is in --full and in the JSON.
+MAX_FRAMES_SHOWN = 8
 
 # Width limits. Below 60 the columns stop making sense; above 100 long lines
 # become hard to scan even if the terminal is wide enough to hold them.
@@ -369,16 +381,18 @@ def print_stats(ctx, source=None, full=False):
         ('ICMP', stats['icmp']),
         ('ARP', stats['arp']),
         ('DNS', stats['dns']),
+        ('Modbus', stats['modbus']),
     ]
 
     # Widest label plus the widest count decide where the bar starts, so the
     # bars line up no matter how big the numbers get.
     count_width = max(len(str(count)) for _, count in protocols)
-    bar_space = width - 4 - 6 - count_width - 10
+    # 7 = the widest name ('Modbus') plus one space.
+    bar_space = width - 4 - 7 - count_width - 10
 
     for name, count in sorted(protocols, key=lambda row: -row[1]):
         share = f"{100 * count / total:.1f}%" if total else "0.0%"
-        print(f"    {name:<6}{count:>{count_width}}  "
+        print(f"    {name:<7}{count:>{count_width}}  "
               f"{_bar(count, total, bar_space):<{bar_space}} {share:>6}")
 
     # DNS rides on top of UDP, so the percentages above deliberately do not
@@ -407,6 +421,100 @@ def print_stats(ctx, source=None, full=False):
     print(_heading(f"ports seen ({len(stats['unique_ports'])})"))
     groups = None if full else MAX_PORT_GROUPS
     print(f"    {_format_ports(stats['unique_ports'], groups)}")
+
+    # Only when there is something to show. A capture without Modbus is
+    # the common case, and an empty block in every report is noise.
+    modbus = ctx['modbus']
+    if stats['modbus'] or modbus['malformed']:
+        _print_modbus(modbus, full)
+
+
+def _fc_name(fc):
+    return FUNCTION_NAMES.get(fc, 'unknown')
+
+
+def _exception_sort_key(code):
+    """None (a response cut off before its code byte) sorts after real codes.
+
+    A plain sorted() would raise TypeError comparing None with an int.
+    """
+    return (code is None, code or 0)
+
+
+def _print_modbus(modbus, full=False):
+    """The MODBUS block: who gives orders, which ones, and how devices answer."""
+
+    masters = modbus['masters']
+    slaves = modbus['slaves']
+    requests = sum(m['requests'] for m in masters.values())
+    responses = sum(s['responses'] for s in slaves.values())
+
+    print(_heading("modbus"))
+    print(f"    {'Requests':<20}{requests:>9}")
+    print(f"    {'Responses':<20}{responses:>9}")
+
+    malformed = modbus['malformed']
+    if malformed:
+        frames = [str(m['frame']) for m in malformed]
+        limit = len(frames) if full else MAX_FRAMES_SHOWN
+        listed = ', '.join(frames[:limit])
+        if len(frames) > limit:
+            listed += f" (+{len(frames) - limit} more)"
+        print(f"    {'Malformed on 502':<20}{len(malformed):>9}  {_c(f'frames {listed}', _DIM)}")
+
+    # ---------------- masters ----------------
+    # One line per master: the three numbers that matter first (how much,
+    # how varied, how many writes), then where it sends them.
+    print(f"\n  Masters ({len(masters)})")
+    for ip in _sort_ips(masters):
+        m = masters[ip]
+        targets = ', '.join(f"{slave} [{', '.join(map(str, sorted(units)))}]"
+                            for slave, units in sorted(m['slaves'].items()))
+        print(f"    {ip:<16}{m['requests']:>6} req {len(m['function_codes']):>4} FC "
+              f"{len(m['writes']):>4} writes  {_c('→', _DIM)} {targets}")
+
+    # ---------------- function codes ----------------
+    totals = {}
+    for m in masters.values():
+        for fc, count in m['fc_counts'].items():
+            totals[fc] = totals.get(fc, 0) + count
+
+    print(f"\n  Function codes ({len(totals)})")
+    ranked = sorted(totals.items(), key=lambda item: (-item[1], item[0]))
+    limit = len(ranked) if full else MAX_FC_SHOWN
+    for fc, count in ranked[:limit]:
+        print(f"    {fc:>3}  {_fc_name(fc):<34}{count:>7}")
+    if len(ranked) > limit:
+        print(_c(f"    (+{len(ranked) - limit} more)", _DIM))
+
+    # ---------------- exceptions ----------------
+    failing = {ip: s for ip, s in slaves.items() if s['exceptions']}
+    if failing:
+        print("\n  Exceptions")
+        for ip in _sort_ips(failing):
+            first = True
+            for code in sorted(failing[ip]['exceptions'], key=_exception_sort_key):
+                name = EXCEPTION_NAMES.get(code, 'unknown') if code is not None else 'truncated'
+                label = ip if first else ''
+                # Count before name: exception names run up to 39
+                # characters, and a column after them would not line up.
+                print(f"    {label:<16}{str(code):>3}  "
+                      f"{failing[ip]['exceptions'][code]:>5}  {name}")
+                first = False
+
+    # ---------------- writes (full only) ----------------
+    # Every write is a moment something on the plant was changed. The
+    # count is in the masters table; the individual events only in --full.
+    if full:
+        writes = sorted((w for m_ip, m in masters.items() for w in
+                         ({**w, 'master': m_ip} for w in m['writes'])),
+                        key=lambda w: (w['time'], w['frame']))
+        if writes:
+            print(f"\n  Writes ({len(writes)})")
+            for w in writes:
+                print(f"    {_c('frame', _DIM)} {w['frame']:>6}  {_ts(w['time'])}  "
+                      f"{w['master']} → {w['slave']} [{w['unit']}]  "
+                      f"FC {w['fc']} {_fc_name(w['fc'])}")
 
 
 def print_findings(findings, full=False):
@@ -536,6 +644,7 @@ def print_json(ctx, findings, source):
                 "icmp": stats['icmp'],
                 "arp": stats['arp'],
                 "dns": stats['dns'],
+                "modbus": stats['modbus'],
             },
             "layers": {
                 "ipv4": stats['ipv4'],
@@ -555,7 +664,54 @@ def print_json(ctx, findings, source):
             "first_ts": stats['first_ts'],
             "last_ts": stats['last_ts'],
         },
+        "modbus": _modbus_json(ctx['modbus']),
         "findings": findings,
     }
 
     print(json.dumps(data, indent=2))
+
+
+def _modbus_json(modbus):
+    """ctx['modbus'] in a shape json.dumps() accepts and a consumer can diff.
+
+    Sets become sorted lists, and int-keyed dicts become lists of objects:
+    JSON object keys are always strings, so {4: 317} would come out as
+    {"4": 317} and the consumer would have to convert it back.
+    """
+    masters = []
+    for ip in _sort_ips(modbus['masters']):
+        m = modbus['masters'][ip]
+        masters.append({
+            "ip": ip,
+            "requests": m['requests'],
+            "first_ts": m['first_ts'],
+            "last_ts": m['last_ts'],
+            "first_frame": m['first_frame'],
+            "last_frame": m['last_frame'],
+            "slaves": [{"ip": slave, "units": sorted(units)}
+                       for slave, units in sorted(m['slaves'].items())],
+            # In order of first use - the order is the evidence for a sweep.
+            "function_codes": [{"fc": fc, "name": FUNCTION_NAMES.get(fc),
+                                "count": m['fc_counts'][fc],
+                                "first_time": ts, "first_frame": frame}
+                               for fc, (ts, frame) in m['function_codes'].items()],
+            "writes": m['writes'],
+        })
+
+    slaves = []
+    for ip in _sort_ips(modbus['slaves']):
+        s = modbus['slaves'][ip]
+        slaves.append({
+            "ip": ip,
+            "responses": s['responses'],
+            "units": sorted(s['units']),
+            "exceptions": [{"code": code, "name": EXCEPTION_NAMES.get(code),
+                            "count": s['exceptions'][code]}
+                           for code in sorted(s['exceptions'], key=_exception_sort_key)],
+        })
+
+    return {
+        "masters": masters,
+        "slaves": slaves,
+        "malformed": modbus['malformed'],
+    }

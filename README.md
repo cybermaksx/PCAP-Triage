@@ -7,14 +7,16 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 > today. Every finding says when it started and ended, which Wireshark frame to look at,
 > and in what order the ports were hit. All of it sits on top of a streaming reader that
 > keeps memory flat on large captures, a machine-readable JSON mode and a pytest suite.
-> Industrial protocol support is the next milestone. See [Roadmap](#roadmap) for the
-> honest state of things.
+>
+> **Phase 2 has started:** Modbus/TCP is parsed and summarised — masters, slaves,
+> function codes, writes, exceptions and malformed traffic on port 502. Detectors on
+> top of it are next. See [Roadmap](#roadmap) for the honest state of things.
 
 ## Features
 
 **Working now**
 
-- Protocol distribution — IPv4, IPv6, TCP, UDP, ICMP, ARP, DNS, counted independently
+- Protocol distribution — IPv4, IPv6, TCP, UDP, ICMP, ARP, DNS, Modbus, counted independently
   per OSI layer, so TCP carried over IPv6 is counted as both
 - Unique IPv4 and IPv6 address extraction, plus unique ports
 - Packet size metrics — average, min, max
@@ -35,6 +37,11 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
 - Scan order — the order in which a scanner first touched each port, with a tag saying
   whether the walk was `sequential` (`nmap -r`, a hand-written script) or `randomised`
   (nmap's default)
+- Modbus/TCP parsing — the MBAP header is decoded and validated by a parser of its own
+  (`modbus.py`), not by scapy, so malformed and non-Modbus traffic on port 502 is
+  counted instead of silently mislabelled. The report gets a `MODBUS` block: every
+  master with its request count, number of distinct function codes, writes and target
+  devices; function codes by name; exceptions per device; malformed frames by number
 - Full mode (`--full`) — lifts every truncation limit and prints a per-packet timeline
   for each finding
 - Detector registry — new detections plug in without touching the pipeline
@@ -51,8 +58,9 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   with a non-zero exit code, so a wrapping script can tell a failed run from an
   empty one
 - CLI interface via `argparse`
-- pytest suite — 55 tests over the collector, the detectors, the registry contract and
-  all output modes
+- pytest suite — 212 tests over the collector, the Modbus parser, the detectors, the
+  registry contract and all output modes. Modbus expectations are taken from tshark,
+  not from the code under test
 
 **Known limitations**
 
@@ -60,6 +68,14 @@ A Python network-forensics tool for offline analysis of `.pcap` / `.pcapng` capt
   consumer has to read two keys instead of one
 - ICMPv6 is not counted — `ICMP in packet` matches ICMP over IPv4 only
 - DNS is only counted over UDP; DNS over TCP (port 53) is missed
+- Modbus is recognised on port 502 only. Real installations do move it; the parser
+  itself ignores ports, but nothing yet decides that a stream on another port is Modbus
+- One Modbus message per TCP segment is assumed. Several messages packed into one
+  segment, or one message split across two, are counted as malformed — there is no TCP
+  stream reassembly
+- Modbus over UDP and Modbus RTU-over-TCP are not recognised
+- The Modbus block reports; it does not judge yet. A function-code sweep is plainly
+  visible in it (128 codes from one master), but no detector raises a finding for it
 - Packets themselves are streamed, but `stats['packet_sizes']` still keeps one entry
   per packet, so memory has not been made fully constant in file size. Only min, max
   and the average are read back from that list
@@ -231,6 +247,52 @@ UTC Date and Time of Day*.
 Where a capture contains several techniques they are listed together in one block,
 most severe first.
 
+### Modbus
+
+`pcaps/modbus_test.pcap` holds three unrelated captures merged into one: a 2004
+walk through many function codes, a 2006 sweep of all 128 function codes against an
+internet-facing device, and the first 40 seconds of a 2012 SCADA session. The
+`MODBUS` block from it:
+
+```
+MODBUS
+────────────────────────────────────────────────────────────────────────────────
+    Requests                  566
+    Responses                 573
+    Malformed on 502            6  frames 76, 78, 80, 82, 111, 113
+
+  Masters (4)
+    10.0.0.9             6 req    4 FC    3 writes  → 10.0.0.3 [10]
+    10.0.0.57           12 req    3 FC    0 writes  → 10.0.0.3 [10], 10.0.0.8 [10]
+    10.1.1.234         407 req    3 FC   20 writes  → 10.10.5.85 [255]
+    192.168.66.235     141 req  128 FC    6 writes  → 166.161.16.230 [1]
+
+  Function codes (128)
+      4  Read Input Registers                  317
+      3  Read Holding Registers                 73
+      6  Write Single Register                  22
+    ...
+
+  Exceptions
+    10.0.0.3         11      4  Gateway Target Device Failed to Respond
+    10.0.0.8          5      5  Acknowledge
+                      6      5  Server Device Busy
+    166.161.16.230    1    104  Illegal Function
+                      2      8  Illegal Data Address
+                      3     18  Illegal Data Value
+```
+
+The number in brackets is the unit id. A master using 128 distinct function codes
+while the others use three or four, answered mostly with *Illegal Function*, is a
+device being fingerprinted. `--full` adds every write with its frame number and time.
+
+A message counts as Modbus only if its MBAP header is self-consistent: protocol id 0,
+a length field between 2 and 254 that matches the bytes actually present. Anything
+else carrying data on port 502 is listed as malformed rather than dropped — scanners
+send garbage on purpose, and a device answering in another protocol is itself a fact.
+This occasionally disagrees with Wireshark: frames 91–109 above are valid MBAP
+exception responses that Wireshark shows as plain data.
+
 ### Full output
 
 ```bash
@@ -353,8 +415,8 @@ lets the same command feed a pipe instead.
 ### Running the tests
 
 ```bash
-python -m pytest -m "not slow"    # 50 tests, ~0.2 s
-python -m pytest                  # 55 tests, ~45 s
+python -m pytest -m "not slow"    # 207 tests, ~1 s
+python -m pytest                  # 212 tests, ~45 s
 ```
 
 The `-m` matters: a bare `pytest` does not put the project directory on the module
@@ -394,8 +456,9 @@ Phase 2 — OT/ICS protocols, the actual goal of this project:
 
 | Feature | Status |
 |---|---|
-| Modbus/TCP detection + MBAP header parsing | Next up |
-| Modbus write-command detection (FC 5/6/15/16/22/23) | Planned |
+| Modbus/TCP detection + MBAP header parsing | Done |
+| Modbus function-code sweep detection | Next up |
+| Modbus write-command detection (FC 5/6/15/16/22/23) | Next up |
 | Unauthorized Modbus master detection | Planned |
 | DNP3 / S7comm parsing | Planned |
 
@@ -418,10 +481,12 @@ PCAP-Triage/
 ├── context.py                # Stage 1 — collects facts in a single pass over the packets
 ├── detectors.py              # Stage 2 — turns facts into findings; detector registry
 ├── report.py                 # Stage 3 — all output formatting
+├── modbus.py                 # Modbus/TCP: MBAP parser, function and exception tables
 ├── tests/
 │   ├── conftest.py           # Shared fixtures: one parsed context per capture
 │   ├── test_context.py       # Counter accuracy and the layer-coverage invariant
 │   ├── test_detectors.py     # Thresholds, finding schema, registry contract
+│   ├── test_modbus.py        # MBAP parser on hand-built bytes, no capture needed
 │   └── test_report.py        # JSON validity and which stream each helper writes to
 ├── pcaps/                    # Sample captures
 │   ├── test.pcapng           # 40 packets, mixed IPv4/IPv6, no scan
@@ -430,7 +495,8 @@ PCAP-Triage/
 │   ├── synscan.pcapng        # 131 428 packets, full-range SYN scan
 │   ├── udpscan.pcapng        # 873 packets, UDP scan
 │   ├── arpspoof.pcapng       # 5 packets, ARP spoofing of two hosts
-│   └── dnstunnel.pcapng      # 212 packets, DNS tunnel
+│   ├── dnstunnel.pcapng      # 212 packets, DNS tunnel
+│   └── modbus_test.pcap      # 1 700 packets, three Modbus captures (2004/2006/2012)
 ├── pytest.ini
 ├── requirements.txt
 ├── requirements-dev.txt
